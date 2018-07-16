@@ -194,7 +194,7 @@ H5FL_BLK_EXTERN(type_conv);
 static void *
 H5O_fill_new_decode(H5F_t H5_ATTR_UNUSED *f, H5O_t H5_ATTR_UNUSED *open_oh,
     unsigned H5_ATTR_UNUSED mesg_flags, unsigned H5_ATTR_UNUSED *ioflags,
-    size_t H5_ATTR_UNUSED p_size, const uint8_t *p)
+    size_t p_size, const uint8_t *p)
 {
     H5O_fill_t	*fill = NULL;
     void *ret_value = NULL;     /* Return value */
@@ -228,6 +228,8 @@ H5O_fill_new_decode(H5F_t H5_ATTR_UNUSED *f, H5O_t H5_ATTR_UNUSED *open_oh,
             INT32DECODE(p, fill->size);
             if(fill->size > 0) {
                 H5_CHECK_OVERFLOW(fill->size, ssize_t, size_t);
+                if((size_t)fill->size > p_size)
+                    HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, NULL, "destination buffer too small")
                 if(NULL == (fill->buf = H5MM_malloc((size_t)fill->size)))
                     HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, NULL, "memory allocation failed for fill value")
                 HDmemcpy(fill->buf, p, (size_t)fill->size);
@@ -309,7 +311,7 @@ done:
 static void *
 H5O_fill_old_decode(H5F_t H5_ATTR_UNUSED *f, H5O_t H5_ATTR_UNUSED *open_oh,
     unsigned H5_ATTR_UNUSED mesg_flags, unsigned H5_ATTR_UNUSED *ioflags,
-    size_t H5_ATTR_UNUSED p_size, const uint8_t *p)
+    size_t p_size, const uint8_t *p)
 {
     H5O_fill_t *fill = NULL;	/* Decoded fill value message */
     void *ret_value = NULL;     /* Return value */
@@ -332,6 +334,8 @@ H5O_fill_old_decode(H5F_t H5_ATTR_UNUSED *f, H5O_t H5_ATTR_UNUSED *open_oh,
 
     /* Only decode the fill value itself if there is one */
     if(fill->size > 0) {
+        if((size_t)fill->size > p_size)
+            HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, NULL, "destination buffer too small")
         if(NULL == (fill->buf = H5MM_malloc((size_t)fill->size)))
             HGOTO_ERROR(H5E_RESOURCE, H5E_NOSPACE, NULL, "memory allocation failed for fill value")
         HDmemcpy(fill->buf, p, (size_t)fill->size);

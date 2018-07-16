@@ -1545,6 +1545,8 @@ H5O__chunk_deserialize(H5O_t *oh, haddr_t addr, size_t len, const uint8_t *image
                 /* Decode ref. count message */
                 HDassert(oh->version > H5O_VERSION_1);
                 refcount = (H5O_refcount_t *)(H5O_MSG_REFCOUNT->decode)(udata->f, NULL, 0, &ioflags, mesg->raw_size, mesg->raw);
+                if(!refcount)
+                    HGOTO_ERROR(H5E_OHDR, H5E_CANTSET, FAIL, "can't decode refcount")
 
                 /* Save 'native' form of ref. count message */
                 mesg->native = refcount;

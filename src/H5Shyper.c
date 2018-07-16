@@ -5945,7 +5945,8 @@ H5S__hyper_make_spans(unsigned rank, const hsize_t *start, const hsize_t *stride
     } /* end for */
 
     /* Indicate that there is a pointer to this tree */
-    down->count = 1;
+    if (down)
+        down->count = 1;
 
     /* Success!  Return the head of the list in the slowest changing dimension */
     ret_value = down;
