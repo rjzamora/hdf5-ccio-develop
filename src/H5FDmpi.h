@@ -37,7 +37,8 @@
 /* Type of I/O for data transfer properties */
 typedef enum H5FD_mpio_xfer_t {
     H5FD_MPIO_INDEPENDENT = 0, 		/*zero is the default*/
-    H5FD_MPIO_COLLECTIVE
+    H5FD_MPIO_COLLECTIVE,
+    H5FD_MPIO_PROC0_BCAST
 } H5FD_mpio_xfer_t;
 
 /* Type of chunked dataset I/O */

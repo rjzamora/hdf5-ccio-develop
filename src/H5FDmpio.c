@@ -445,7 +445,7 @@ H5Pset_dxpl_mpio(hid_t dxpl_id, H5FD_mpio_xfer_t xfer_mode)
     /* Check arguments */
     if(NULL == (plist = H5P_object_verify(dxpl_id, H5P_DATASET_XFER)))
         HGOTO_ERROR(H5E_PLIST, H5E_BADTYPE, FAIL, "not a dxpl")
-    if(H5FD_MPIO_INDEPENDENT != xfer_mode && H5FD_MPIO_COLLECTIVE != xfer_mode)
+    if(H5FD_MPIO_INDEPENDENT != xfer_mode && H5FD_MPIO_COLLECTIVE != xfer_mode && H5FD_MPIO_PROC0_BCAST != xfer_mode)
         HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "incorrect xfer_mode")
 
     /* Set the transfer mode */
@@ -1433,6 +1433,7 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
 #endif
     hbool_t			use_view_this_time = FALSE;
     herr_t              	ret_value = SUCCEED;
+    H5FD_mpio_xfer_t            xfer_mode;   /* I/O transfer mode */
 
     FUNC_ENTER_NOAPI_NOINIT
 
@@ -1460,14 +1461,12 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
 		(long)mpi_off, size_i );
 #endif
 
+    /* Get the transfer mode from the API context */
+    if(H5CX_get_io_xfer_mode(&xfer_mode) < 0)
+      HGOTO_ERROR(H5E_VFL, H5E_CANTGET, FAIL, "can't get MPI-I/O transfer mode")
+
     /* Only look for MPI views for raw data transfers */
     if(type == H5FD_MEM_DRAW) {
-        H5FD_mpio_xfer_t            xfer_mode;   /* I/O transfer mode */
-
-        /* Get the transfer mode from the API context */
-        if(H5CX_get_io_xfer_mode(&xfer_mode) < 0)
-            HGOTO_ERROR(H5E_VFL, H5E_CANTGET, FAIL, "can't get MPI-I/O transfer mode")
-
         /*
          * Set up for a fancy xfer using complex types, or single byte block. We
          * wouldn't need to rely on the use_view field if MPI semantics allowed
@@ -1496,7 +1495,7 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
             mpi_off = 0;
         } /* end if */
     } /* end if */
-
+    int isnd_sz = 0;
     /* Read the data. */
     if(use_view_this_time) {
         H5FD_mpio_collective_opt_t coll_opt_mode;
@@ -1522,7 +1521,6 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
             if(H5FD_mpio_Debug[(int)'t'])
                 fprintf(stdout, "H5FD_mpio_read: doing MPI independent IO\n");
 #endif
-
             if(MPI_SUCCESS != (mpi_code = MPI_File_read_at(file->f, mpi_off, buf, size_i, buf_type, &mpi_stat)))
                 HMPI_GOTO_ERROR(FAIL, "MPI_File_read_at failed", mpi_code)
         } /* end else */
@@ -1533,9 +1531,26 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
         if(MPI_SUCCESS != (mpi_code = MPI_File_set_view(file->f, (MPI_Offset)0, MPI_BYTE, MPI_BYTE, H5FD_mpi_native_g, file->info)))
             HMPI_GOTO_ERROR(FAIL, "MPI_File_set_view failed", mpi_code)
     } else {
+      
+      if( xfer_mode == H5FD_MPIO_PROC0_BCAST) {
+
+	if(file->mpi_rank == 0) {
+
+	  if(MPI_SUCCESS != (mpi_code = MPI_File_read_at(file->f, mpi_off, buf, size_i, buf_type, &mpi_stat)))
+	    HMPI_GOTO_ERROR(FAIL, "MPI_File_read_at failed", mpi_code)
+	}
+
+	if(MPI_SUCCESS != MPI_Bcast(buf, size_i, buf_type, 0, file->comm))
+	  HMPI_GOTO_ERROR(FAIL, "MPI_Bcast failed", mpi_code)
+	isnd_sz = 1;
+      }
+      else {
         if(MPI_SUCCESS != (mpi_code = MPI_File_read_at(file->f, mpi_off, buf, size_i, buf_type, &mpi_stat)))
-            HMPI_GOTO_ERROR(FAIL, "MPI_File_read_at failed", mpi_code)
+	  HMPI_GOTO_ERROR(FAIL, "MPI_File_read_at failed", mpi_code)
+	    }
     }
+
+    if ( xfer_mode != H5FD_MPIO_PROC0_BCAST || ((isnd_sz==1) && (file->mpi_rank == 0)) ) {
 
     /* How many bytes were actually read? */
 #if MPI_VERSION >= 3
@@ -1544,6 +1559,16 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
     if (MPI_SUCCESS != (mpi_code = MPI_Get_elements(&mpi_stat, MPI_BYTE, &bytes_read)))
 #endif
         HMPI_GOTO_ERROR(FAIL, "MPI_Get_elements failed", mpi_code)
+#if 1 /* ENABLES THE BCAST */
+    }  
+    if(isnd_sz==1){
+#  if MPI_VERSION >= 3
+      MPI_Bcast(&bytes_read, 1, MPI_COUNT, 0, file->comm);
+#  else
+      MPI_Bcast(&bytes_read, 1, MPI_INT, 0, file->comm);
+#  endif
+    }
+#endif
 
     /* Get the type's size */
 #if MPI_VERSION >= 3
@@ -1552,7 +1577,6 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
     if (MPI_SUCCESS != (mpi_code = MPI_Type_size(buf_type, &type_size)))
 #endif
         HMPI_GOTO_ERROR(FAIL, "MPI_Type_size failed", mpi_code)
-
     /* Compute the actual number of bytes requested */
     io_size=type_size*size_i;
 
@@ -1563,9 +1587,12 @@ H5FD_mpio_read(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
     /*
      * This gives us zeroes beyond end of physical MPI file.
      */
-    if ((n=(io_size-bytes_read)) > 0)
-        HDmemset((char*)buf+bytes_read, 0, (size_t)n);
-
+     if ((n=(io_size-bytes_read)) > 0) {
+       HDmemset((char*)buf+bytes_read, 0, (size_t)n); 
+     }
+#if 0 /* THIS SKIPS THE BCAST, BUT IT NEEDS TO HAPPEN ON THE OTHER PROCESSES TOO MSB */
+    }
+#endif
 done:
 #ifdef H5FDmpio_DEBUG
     if (H5FD_mpio_Debug[(int)'t'])
@@ -1780,6 +1807,7 @@ H5FD_mpio_write(H5FD_t *_file, H5FD_mem_t type, hid_t H5_ATTR_UNUSED dxpl_id,
         mpi_off = 0;
     } /* end if */
 
+    int isnd_sz = 0;
     /* Write the data. */
     if(use_view_this_time) {
         H5FD_mpio_collective_opt_t coll_opt_mode;
@@ -1816,17 +1844,34 @@ H5FD_mpio_write(H5FD_t *_file, H5FD_mem_t type, hid_t H5_ATTR_UNUSED dxpl_id,
         if(MPI_SUCCESS != (mpi_code = MPI_File_set_view(file->f, (MPI_Offset)0, MPI_BYTE, MPI_BYTE, H5FD_mpi_native_g,  file->info)))
             HMPI_GOTO_ERROR(FAIL, "MPI_File_set_view failed", mpi_code)
     } else {
-        if(MPI_SUCCESS != (mpi_code = MPI_File_write_at(file->f, mpi_off, buf, size_i, buf_type, &mpi_stat)))
-            HMPI_GOTO_ERROR(FAIL, "MPI_File_write_at failed", mpi_code)
-    }
 
+      if( xfer_mode == H5FD_MPIO_PROC0_BCAST) {
+        if(file->mpi_rank == 0) {
+	  if(MPI_SUCCESS != (mpi_code = MPI_File_write_at(file->f, mpi_off, buf, size_i, buf_type, &mpi_stat)))
+	    HMPI_GOTO_ERROR(FAIL, "MPI_File_read_at failed", mpi_code)
+	  }
+	isnd_sz = 1;
+	} else {
+          if(MPI_SUCCESS != (mpi_code = MPI_File_write_at(file->f, mpi_off, buf, size_i, buf_type, &mpi_stat)))
+             HMPI_GOTO_ERROR(FAIL, "MPI_File_write_at failed", mpi_code)
+	}
+    }
+    if ( xfer_mode != H5FD_MPIO_PROC0_BCAST || ((isnd_sz==1) && (file->mpi_rank == 0)) ) {
     /* How many bytes were actually written? */
 #if MPI_VERSION >= 3
-    if(MPI_SUCCESS != (mpi_code = MPI_Get_elements_x(&mpi_stat, buf_type, &bytes_written)))
+      if(MPI_SUCCESS != (mpi_code = MPI_Get_elements_x(&mpi_stat, buf_type, &bytes_written)))
 #else
-    if(MPI_SUCCESS != (mpi_code = MPI_Get_elements(&mpi_stat, MPI_BYTE, &bytes_written)))
+      if(MPI_SUCCESS != (mpi_code = MPI_Get_elements(&mpi_stat, MPI_BYTE, &bytes_written)))
 #endif
         HMPI_GOTO_ERROR(FAIL, "MPI_Get_elements failed", mpi_code)
+    }
+    if(isnd_sz==1){
+#  if MPI_VERSION >= 3
+      MPI_Bcast(&bytes_written, 1, MPI_COUNT, 0, file->comm);
+#  else
+      MPI_Bcast(&bytes_written, 1, MPI_INT, 0, file->comm);
+#  endif
+    }
 
     /* Get the type's size */
 #if MPI_VERSION >= 3
