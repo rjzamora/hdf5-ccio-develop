@@ -1475,7 +1475,6 @@ H5FDwrite(H5FD_t *file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size_t siz
 done:
     FUNC_LEAVE_API(ret_value)
 } /* end H5FDwrite() */
-
 
 /*-------------------------------------------------------------------------
  * Function:    H5FDflush
@@ -1945,4 +1944,3 @@ H5FDdriver_query(hid_t driver_id, unsigned long *flags/*out*/)
 done:
     FUNC_LEAVE_API(ret_value)
 } /* end H5FDdriver_query() */
-

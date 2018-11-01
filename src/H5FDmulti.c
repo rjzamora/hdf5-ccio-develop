@@ -92,7 +92,7 @@ typedef struct H5FD_multi_t {
     haddr_t             memb_next[H5FD_MEM_NTYPES]; /*addr of next member                       */
     H5FD_t             *memb[H5FD_MEM_NTYPES];      /*member pointers                           */
     haddr_t             memb_eoa[H5FD_MEM_NTYPES];  /*EOA for individual files,
-                                                     *end of allocated addresses.  v1.6 library 
+                                                     *end of allocated addresses.  v1.6 library
                                                      *have the EOA for the entire file. But it's
                                                      *meaningless for MULTI file.  We replaced it
                                                      *with the EOAs for individual files        */
@@ -171,6 +171,8 @@ static const H5FD_class_t H5FD_multi_g = {
     H5FD_multi_get_handle,                      /*get_handle            */
     H5FD_multi_read,				/*read			*/
     H5FD_multi_write,				/*write			*/
+    NULL,                                       /*select_read           */
+    NULL,                                       /*select_write          */
     H5FD_multi_flush,				/*flush			*/
     H5FD_multi_truncate,			/*truncate		*/
     H5FD_multi_lock,                            /*lock                  */
@@ -836,9 +838,9 @@ H5FD_multi_sb_decode(H5FD_t *_file, const char *name, const unsigned char *buf)
         if (file->memb[mt])
             if(H5FDset_eoa(file->memb[mt], mt, memb_eoa[mt])<0)
                 H5Epush_ret(func, H5E_ERR_CLS, H5E_INTERNAL, H5E_CANTSET, "set_eoa() failed", -1)
-       
-        /* Save the individual EOAs in one place for later comparison (in H5FD_multi_set_eoa) */ 
-        file->memb_eoa[mt] = memb_eoa[mt]; 
+
+        /* Save the individual EOAs in one place for later comparison (in H5FD_multi_set_eoa) */
+        file->memb_eoa[mt] = memb_eoa[mt];
     } END_MEMBERS;
 
     return 0;
@@ -1007,7 +1009,7 @@ H5FD_multi_open(const char *name, unsigned flags, hid_t fapl_id,
     /*
      * Initialize the file from the file access properties, using default
      * values if necessary.  Make sure to use CALLOC here because the code
-     * in H5FD_multi_set_eoa depends on the proper initialization of memb_eoa 
+     * in H5FD_multi_set_eoa depends on the proper initialization of memb_eoa
      * in H5FD_multi_t.
      */
     if(NULL == (file = (H5FD_multi_t *)calloc((size_t)1, sizeof(H5FD_multi_t))))

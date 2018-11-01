@@ -796,6 +796,14 @@ H5_DLL herr_t H5F_flush_mounts(H5F_t *f);
 H5_DLL herr_t H5F_block_read(H5F_t *f, H5FD_mem_t type, haddr_t addr, size_t size, void *buf/*out*/);
 H5_DLL herr_t H5F_block_write(H5F_t *f, H5FD_mem_t type, haddr_t addr, size_t size, const void *buf);
 
+/* Functions that operate on selections of elements wrt super block */
+H5_DLL herr_t H5F_select_read(const H5F_t *f, H5FD_mem_t type,
+    hid_t file_space, hid_t mem_space, size_t elmt_size,
+    haddr_t addr, void *buf/*out*/);
+H5_DLL herr_t H5F_select_write(const H5F_t *f, H5FD_mem_t type,
+    hid_t file_space, hid_t mem_space, size_t elmt_size,
+    haddr_t addr, const void *buf);
+
 /* Functions that flush or evict */
 H5_DLL herr_t H5F_flush_tagged_metadata(H5F_t *f, haddr_t tag);
 H5_DLL herr_t H5F_evict_tagged_metadata(H5F_t *f, haddr_t tag);
@@ -855,4 +863,3 @@ H5_DLL herr_t H5F_cwfs_remove_heap(H5F_file_t *shared, struct H5HG_heap_t *heap)
 H5_DLL herr_t H5F_debug(H5F_t *f, FILE * stream, int indent, int fwidth);
 
 #endif /* _H5Fprivate_H */
-

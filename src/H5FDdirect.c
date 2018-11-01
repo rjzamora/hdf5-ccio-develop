@@ -167,6 +167,8 @@ static const H5FD_class_t H5FD_direct_g = {
     H5FD_direct_get_handle,                     /*get_handle            */
     H5FD_direct_read,        /*read      */
     H5FD_direct_write,        /*write      */
+    NULL,                       /* select_read          */
+    NULL,                       /* select_write         */
     NULL,          /*flush      */
     H5FD_direct_truncate,      	/*truncate    */
     H5FD_direct_lock,          	/*lock                  */
@@ -1346,7 +1348,7 @@ H5FD_direct_lock(H5FD_t *_file, hbool_t rw)
 
     /* Determine the type of lock */
     int lock = rw ? LOCK_EX : LOCK_SH;
-    
+
     /* Place the lock with non-blocking */
     if(HDflock(file->fd, lock | LOCK_NB) < 0)
         HSYS_GOTO_ERROR(H5E_FILE, H5E_BADFILE, FAIL, "unable to flock file")
@@ -1385,4 +1387,3 @@ done:
 } /* end H5FD_direct_unlock() */
 
 #endif /* H5_HAVE_DIRECT */
-
