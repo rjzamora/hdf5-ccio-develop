@@ -66,6 +66,7 @@ typedef struct CustomAgg_FH_Struct_Data {
     int onesided_no_rmw;
     int onesided_inform_rmw;
     int onesided_write_aggmethod;
+    int onesided_read_aggmethod;
     int *ranklist;
     /* ------- Added for Async IO ------- */
     int async_io_outer; /* Assume H5FD_mpio_ccio_osagg_write calls will only require 1 "inner" round */
@@ -2470,6 +2471,7 @@ static herr_t H5FD_mpio_custom_read(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_i
     int                         file_space_ref_count;
     H5S_t                       *mem_space_stype;
     int                         mem_space_ref_count;
+    int                         size_i;
     H5P_genplist_t              *plist = NULL;  /* Property list pointer */
     H5FD_mpio_xfer_t            xfer_mode;      /* I/O tranfer mode */
     herr_t                      ret_value = SUCCEED;
@@ -2911,6 +2913,7 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
     char *fs_block_count = HDgetenv("HDF5_CCIO_FS_BLOCK_COUNT");
     char *custom_agg_debug_str = HDgetenv("HDF5_CCIO_DEBUG");
     char *ccio_wr_method = HDgetenv("HDF5_CCIO_WR_METHOD");
+    char *ccio_rd_method = HDgetenv("HDF5_CCIO_RD_METHOD");
     char *do_async_io = HDgetenv("HDF5_CCIO_ASYNC");
     char *set_cb_nodes_stride = HDgetenv("HDF5_CCIO_CB_STRIDE");
     char *use_file_system = HDgetenv("HDF5_CCIO_FS");
@@ -2938,6 +2941,7 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
     file->custom_agg_data.onesided_no_rmw = 1;
     file->custom_agg_data.onesided_inform_rmw = 0;
     file->custom_agg_data.onesided_write_aggmethod = 1;
+    file->custom_agg_data.onesided_read_aggmethod = 1;
     file->custom_agg_data.topo_cb_select = 0;
 
     if (do_custom_agg_wr && (strcmp(do_custom_agg_wr,"yes") == 0)) {
@@ -2966,6 +2970,15 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
         file->custom_agg_data.comm = file->comm;
         file->custom_agg_data.fh = fh;
 
+        /* TODO: Can we handle multiple stripes per aggregator?
+         * For now, just pretend like the stripe size is the same as the buffer size...
+         */
+        //int stripes_per_cb_buf = file->custom_agg_data.cb_buffer_size / file->custom_agg_data.fs_block_size;
+        //if ( stripes_per_cb_buf > 1 ) {
+        //    file->custom_agg_data.fs_block_size = file->custom_agg_data.cb_buffer_size;
+        //    file->custom_agg_data.fs_block_count /= stripes_per_cb_buf;
+        //}
+
         int tot_cb_bufsize = (int)(file->custom_agg_data.cb_buffer_size);
         file->custom_agg_data.io_buf = (char *) H5MM_malloc(tot_cb_bufsize*sizeof(char));
         file->custom_agg_data.io_buf_put_amounts = 0;
@@ -2990,6 +3003,13 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
                 file->custom_agg_data.onesided_write_aggmethod = 1;
             if (file->custom_agg_data.onesided_write_aggmethod < 2)
                 file->custom_agg_data.onesided_write_aggmethod = 2;
+        }
+        if ( ccio_rd_method ) {
+            file->custom_agg_data.onesided_read_aggmethod = atoi( ccio_rd_method );
+            if (file->custom_agg_data.onesided_read_aggmethod < 1)
+                file->custom_agg_data.onesided_read_aggmethod = 1;
+            if (file->custom_agg_data.onesided_read_aggmethod < 2)
+                file->custom_agg_data.onesided_read_aggmethod = 2;
         }
 
         if (custom_agg_debug && (mpi_rank == 0)) {
@@ -3473,7 +3493,7 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     }
 
     /* Iterate over 1+ aggregation rounds and read to mem when buffers are full */
-    H5FD_mpio_ccio_iterate_read(ca_data, buf, fs_offsets, offset_list, len_list, mpi_off, contig_access_count, currentNonZeroDataIndex, start_offset, end_offset, firstFileOffset, lastFileOffset, memFlatBuf, fileFlatBuf, myrank, error_code);
+    H5FD_mpio_ccio_iterate_read(ca_data, buf, fs_block_info, offset_list, len_list, mpi_off, contig_access_count, currentNonZeroDataIndex, start_offset, end_offset, firstFileOffset, lastFileOffset, memFlatBuf, fileFlatBuf, myrank, error_code);
 
     /* Async I/O - Wait for any outstanding requests (we are done with this I/O call) */
     ca_data->use_dup = 0;
@@ -3487,7 +3507,7 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     H5MM_free(st_offsets);
     H5MM_free(end_offsets);
     H5MM_free(count_sizes);
-    H5MM_free(fs_offsets);
+    H5MM_free(fs_block_info);
 
 } /* H5FD_mpio_ccio_read_one_sided */
 
@@ -4816,7 +4836,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
             * include this one.
             */
             if (blockIter == (contig_access_count-1))
-            numTargetAggs++;
+                numTargetAggs++;
         }
 
 #ifdef onesidedtrace
@@ -5076,7 +5096,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                                     if (!bufTypeIsContig) {
                                         int k;
                                         for (k=targetAggsForMyDataFirstOffLenIndex[roundIter][aggIter];k<=targetAggsForMyDataLastOffLenIndex[roundIter][aggIter];k++)
-                                        amountOfDataWrittenThisRoundAgg += len_list[k];
+                                            amountOfDataWrittenThisRoundAgg += len_list[k];
 
 #ifdef onesidedtrace
                                         printf("Rank %d - derivedTypePackedSourceBuffer mallocing %ld\n",myrank,amountOfDataWrittenThisRoundAgg);
@@ -5180,8 +5200,6 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
 #endif
 
                             MPI_Win_lock(MPI_LOCK_SHARED, targetAggsForMyData[aggIter], MPI_MODE_NOCHECK, write_buf_window);
-                            //MPI_Win_fence(0, write_buf_window);
-                            //{}
 
                             if (bufTypeIsContig) {
 #ifdef onesidedtrace
@@ -5327,18 +5345,13 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
 #ifdef onesidedtrace
                     printf("about to write out %d stripes\n",stripe_parms->numStripesUsed);
 #endif
+
                     int stripeIter = 0;
                     for (stripeIter=0;stripeIter<stripe_parms->numStripesUsed;stripeIter++) {
-
-                        /* Need to wait for iwrite if we are handling multiple stripes
-                         * (TODO: This can be handled much better in the future)
-                         */
-                        int ineedwait = (int) (stripeIter < (stripe_parms->numStripesUsed-1));
 
 #ifdef onesidedtrace
                         printf("writing write_buf offset %ld len %ld file offset %ld\n",((ADIO_Offset_CA)stripeIter * (ADIO_Offset_CA)(stripeSize)),stripe_parms->stripeIOLens[stripeIter],stripe_parms->stripeIOoffsets[stripeIter]);
 #endif
-
                         if (ca_data->check_req) {
                             MPIO_Wait(&ca_data->io_Request, error_code);
                             ca_data->check_req = 0;
@@ -5346,7 +5359,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
 
                         MPI_File_iwrite_at(ca_data->fh, stripe_parms->stripeIOoffsets[stripeIter], (char*)(write_buf + ((ADIO_Offset_CA)stripeIter * (ADIO_Offset_CA)(stripeSize))), stripe_parms->stripeIOLens[stripeIter], MPI_BYTE, &ca_data->io_Request);
 
-                        if (ca_data->async_io_outer && !ineedwait) {
+                        if (ca_data->async_io_outer && 0) {
                             ca_data->check_req = 1;
                         } else {
                             MPIO_Wait(&ca_data->io_Request, error_code);
@@ -5449,7 +5462,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
      int numNonZeroDataOffsets,
      ADIO_Offset_CA *fd_start,
      ADIO_Offset_CA* fd_end,
-     ADIOI_OneSidedStripeParms_CA *stripe_parms)
+     FS_Block_Parms *stripe_parms)
  {
      int i,j; /* generic iterators */
 
@@ -5515,9 +5528,9 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
          }
 
 #ifdef onesidedtrace
-        printf("Rank %d - memFlatBuf->count is %d bufTypeExtent is %ld\n",myrank,memFlatBuf->count, bufTypeExtent);
-        for (i=0;i<memFlatBuf->count;i++)
-            printf("Rank %d - memFlatBuf->blocklens[%d] is %d memFlatBuf->indices[%d] is %ld\n",myrank,i,memFlatBuf->blocklens[i],i,memFlatBuf->indices[i]);
+        printf("Rank %d - memFlatBuf->count is %d bufTypeExtent is %ld\n",myrank,flatBuf->count, bufTypeExtent);
+        for (i=0;i<flatBuf->count;i++)
+            printf("Rank %d - flatBuf->blocklens[%d] is %d flatBuf->indices[%d] is %ld\n",myrank,i,flatBuf->blocklens[i],i,flatBuf->indices[i]);
 #endif
      }
 
@@ -5800,7 +5813,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                      if (currentFDSourceBufferState[numSourceAggs].sourceBufferOffset == -1) {
                          currentFDSourceBufferState[numSourceAggs].sourceBufferOffset = currentRecvBufferOffset;
 #ifdef onesidedtrace
-                        printf("Rank %d - For agg %d sourceBufferOffset initialized to %ld\n",myrank,currentAggRankListIndex,currentSourceBufferOffset);
+                        printf("Rank %d - For agg %d sourceBufferOffset initialized to %ld\n",myrank,currentAggRankListIndex,currentRecvBufferOffset);
 #endif
                      }
                  } else {
@@ -5957,9 +5970,9 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                      intraRoundCollBufsizeOffset += coll_bufsize;
                      sourceAggsForMyDataFirstOffLenIndex[sourceAggsForMyDataCurrentRoundIter[numSourceAggs]][numSourceAggs] = blockIter;
                      sourceAggsForMyDataLastOffLenIndex[sourceAggsForMyDataCurrentRoundIter[numSourceAggs]][numSourceAggs] = blockIter;
-                     #ifdef onesidedtrace
-                     printf("block less than fd currentBlockEnd is now %ld intraRoundCollBufsizeOffset is now %ld sourceAggsForMyDataCurrentRoundIter[%d] is now %d\n", currentBlockEnd, intraRoundCollBufsizeOffset, numSourceAggs, sourceAggsForMyDataCurrentRoundIter[numSourceAggs]);
-                     #endif
+#ifdef onesidedtrace
+                     printf("Rank %d - block less than fd currentBlockEnd is now %ld intraRoundCollBufsizeOffset is now %ld sourceAggsForMyDataCurrentRoundIter[%d] is now %d\n", myrank, currentBlockEnd, intraRoundCollBufsizeOffset, numSourceAggs, sourceAggsForMyDataCurrentRoundIter[numSourceAggs]);
+#endif
                  } // while (currentBlockEnd >= intraRoundCollBufsizeOffset)
              } // if (blockEnd >= intraRoundCollBufsizeOffset)
 
@@ -5967,48 +5980,34 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
              * include this one.
              */
              if (blockIter == (contig_access_count - 1))
-             numSourceAggs++;
+                 numSourceAggs++;
          }
 
-         #ifdef onesidedtrace
-         printf("numSourceAggs is %d\n", numSourceAggs);
+#ifdef onesidedtrace
+         printf("Rank %d - numSourceAggs is %d\n", myrank, numSourceAggs);
          for (i = 0; i < numSourceAggs; i++) {
              for (j = 0; j <= sourceAggsForMyDataCurrentRoundIter[i]; j++)
-             printf("sourceAggsForMyData[%d] is %d sourceAggsForMyDataFDStart[%d] is %ld sourceAggsForMyDataFDEnd is %ld sourceAggsForMyDataFirstOffLenIndex is %d with value %ld sourceAggsForMyDataLastOffLenIndex is %d with value %ld\n", i, sourceAggsForMyData[i], i, sourceAggsForMyDataFDStart[i], sourceAggsForMyDataFDEnd[i], sourceAggsForMyDataFirstOffLenIndex[j][i], offset_list[sourceAggsForMyDataFirstOffLenIndex[j][i]], sourceAggsForMyDataLastOffLenIndex[j][i], offset_list[sourceAggsForMyDataLastOffLenIndex[j][i]]);
+             printf("Rank %d - sourceAggsForMyData[%d] is %d sourceAggsForMyDataFDStart[%d] is %ld sourceAggsForMyDataFDEnd is %ld sourceAggsForMyDataFirstOffLenIndex is %d with value %ld sourceAggsForMyDataLastOffLenIndex is %d with value %ld\n", myrank, i, sourceAggsForMyData[i], i, sourceAggsForMyDataFDStart[i], sourceAggsForMyDataFDEnd[i], sourceAggsForMyDataFirstOffLenIndex[j][i], offset_list[sourceAggsForMyDataFirstOffLenIndex[j][i]], sourceAggsForMyDataLastOffLenIndex[j][i], offset_list[sourceAggsForMyDataLastOffLenIndex[j][i]]);
          }
-         #endif
+#endif
 
      } // if ((contig_access_count > 0) && (buf != NULL) && lenListOverZero)
 
      H5MM_free(sourceAggsForMyDataCurrentRoundIter);
 
-     int currentReadBuf = 0;
-     int useIOBuffer = 0;
-
-     /* Check if the I/O is asynchronous */
-     if ( (ca_data->async_io_inner == 1) && (numberOfRounds > 1)) {
-         useIOBuffer = 1;
-         if (ca_data->pthread_io == 1)
-         io_thread = pthread_self();
-     }
-
      /* use the two-phase buffer allocated in the file_open - no app should ever
      * be both reading and reading at the same time */
-     char *read_buf0 = ca_data->io_buf;
-     char *read_buf1 = ca_data->io_buf + coll_bufsize;
+     char *read_buf;
+     MPI_Win read_buf_window;
 
-     // Adjust if this is the "duplicate" buffer
-     if (ca_data->use_dup) {
-         read_buf0 = ca_data->io_buf_d;
-         read_buf1 = ca_data->io_buf_d + coll_bufsize;
-     }
-
-     /* if threaded i/o selected, we'll do a kind of double buffering */
-     char *read_buf = read_buf0;
-     MPI_Win read_buf_window = ca_data->io_buf_window;
-
-     // Adjust if this is the "duplicate" buffer
-     if (ca_data->use_dup) read_buf_window = ca_data->io_buf_window_d;
+    /* Async I/O - Adjust if this is the "duplicate" buffer */
+    if (ca_data->use_dup) {
+        read_buf = ca_data->io_buf_d;
+        read_buf_window = ca_data->io_buf_window_d;
+    } else {
+        read_buf = ca_data->io_buf;
+        read_buf_window = ca_data->io_buf_window;
+    }
 
      ADIO_Offset_CA currentRoundFDStart = 0, nextRoundFDStart = 0;
      ADIO_Offset_CA currentRoundFDEnd = 0, nextRoundFDEnd = 0;
@@ -6027,24 +6026,29 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
              if (nextRoundFDEnd > lastFileOffset)
              nextRoundFDEnd = lastFileOffset;
          }
-         #ifdef onesidedtrace
-         printf("iAmUsedAgg - currentRoundFDStart initialized to %ld currentRoundFDEnd to %ld\n", currentRoundFDStart, currentRoundFDEnd);
-         #endif
-
+#ifdef onesidedtrace
+         printf("Rank %d - iAmUsedAgg - currentRoundFDStart initialized to %ld currentRoundFDEnd to %ld\n", myrank, currentRoundFDStart, currentRoundFDEnd);
+#endif
      } // if iAmUsedAgg
-     #ifdef ROMIO_GPFS
-     endTimeBase = MPI_Wtime();
-     gpfsmpio_prof_cw[GPFSMPIO_CIO_T_DEXCH_SETUP] += (endTimeBase - startTimeBase);
-     startTimeBase = MPI_Wtime();
-     #endif
 
+#ifdef onesidedtrace
+     MPI_Barrier(ca_data->comm);
+     if(myrank==0) { printf("\n\n"); fflush(stdout); }
+     MPI_Barrier(ca_data->comm);
+     printf("Rank %d is waiting at barrier between main loops.\n", myrank);
+     printf("Rank %d -- numberOfRounds = %d, contig_access_count = %d, numSourceAggs = %d\n", myrank, numberOfRounds, contig_access_count, numSourceAggs);
+     fflush(stdout);
+     MPI_Barrier(ca_data->comm);
+     if(myrank==0) { printf("\n\n"); fflush(stdout); }
+     MPI_Barrier(ca_data->comm);
+#endif
 
      /* This is the second main loop of the algorithm, actually nested loop of
      * aggs within rounds. There are 2 flavors of this.
-     * For romio_read_aggmethod of 1 each nested iteration for the source agg
+     * For onesided_read_aggmethod of 1 each nested iteration for the source agg
      * does an mpi_get on a contiguous chunk using a primative datatype
      * determined using the data structures from the first main loop.
-     * For romio_read_aggmethod of 2 each nested iteration for the source agg
+     * For onesided_read_aggmethod of 2 each nested iteration for the source agg
      * builds up data to use in created a derived data type for 1 mpi_get that
      * is done for the target agg for each round.
      * To support lustre there will need to be an additional layer of nesting
@@ -6061,117 +6065,35 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
 
                  currentRoundFDStart = nextRoundFDStart;
 
-                 if (!useIOBuffer || (roundIter == 0)) {
-                     int amountDataToReadThisRound;
-                     if ((fd_end[myAggRank] - currentRoundFDStart) < coll_bufsize) {
-                         currentRoundFDEnd = fd_end[myAggRank];
-                         amountDataToReadThisRound = ((currentRoundFDEnd - currentRoundFDStart) + 1);
-                     } else {
-                         currentRoundFDEnd = currentRoundFDStart + coll_bufsize - (ADIO_Offset_CA) 1;
-                         amountDataToReadThisRound = coll_bufsize;
-                     }
-
-                     if (ca_data->check_req) {
-                         MPIO_Wait(&ca_data->io_Request, error_code);
-                         ca_data->check_req = 0;
-                     }
-                     if (ca_data->async_io_outer) {
-                         ca_data->check_req = 1;
-                     }
-
-                     /* read currentRoundFDEnd bytes */
-                     MPI_File_iread_at(ca_data->fh, currentRoundFDStart, read_buf, amountDataToReadThisRound, MPI_BYTE, &ca_data->io_Request);
-
-                     if ( !(ca_data->async_io_outer) ) {
-                         MPIO_Wait(&ca_data->io_Request, error_code);
-                         ca_data->check_req = 0;
-                     }
-
-                     currentReadBuf = 1;
-                 }
-                 if (useIOBuffer) {      /* use the thread reader for the next round */
-                     /* switch back and forth between the read buffers so that the data aggregation code is diseminating 1 buffer while the thread is reading into the other */
-
-                     if (roundIter > 0) currentRoundFDEnd = nextRoundFDEnd;
-
-                     if (roundIter < (numberOfRounds - 1)) {
-                         nextRoundFDStart += coll_bufsize;
-                         int amountDataToReadNextRound;
-                         if ((fd_end[myAggRank] - nextRoundFDStart) < coll_bufsize) {
-                             nextRoundFDEnd = fd_end[myAggRank];
-                             amountDataToReadNextRound = ((nextRoundFDEnd - nextRoundFDStart) + 1);
-                         } else {
-                             nextRoundFDEnd = nextRoundFDStart + coll_bufsize - (ADIO_Offset_CA) 1;
-                             amountDataToReadNextRound = coll_bufsize;
-                         }
-
-                         if (!pthread_equal(io_thread, pthread_self())) {
-                             pthread_join(io_thread, &thread_ret);
-                             *error_code = *(int *) thread_ret;
-                             if (*error_code != MPI_SUCCESS) return;
-                             io_thread = pthread_self();
-                         }
-                         io_thread_args.fh = ca_data->fh;
-                         /* do a little pointer shuffling: background I/O works from one
-                         * buffer while two-phase machinery fills up another */
-
-                         if (currentReadBuf == 0) {
-                             io_thread_args.buf = read_buf0;
-                             currentReadBuf = 1;
-                             read_buf = read_buf1;
-                         } else {
-                             io_thread_args.buf = read_buf1;
-                             currentReadBuf = 0;
-                             read_buf = read_buf0;
-                         }
-                         io_thread_args.io_kind = ADIOI_READ_CA;
-                         io_thread_args.size = amountDataToReadNextRound;
-                         io_thread_args.offset = nextRoundFDStart;
-                         //io_thread_args.status = &status;
-                         io_thread_args.error_code = *error_code;
-                         if ((pthread_create(&io_thread, NULL, ADIOI_IO_Thread_Func_CA, &(io_thread_args))) != 0)
-                         io_thread = pthread_self();
-
-                     } else {    /* last round */
-
-                         if (!pthread_equal(io_thread, pthread_self())) {
-                             pthread_join(io_thread, &thread_ret);
-                             *error_code = *(int *) thread_ret;
-                             if (*error_code != MPI_SUCCESS) return;
-                             io_thread = pthread_self();
-
-                         }
-                         if (currentReadBuf == 0) {
-                             read_buf = read_buf0;
-                         } else {
-                             read_buf = read_buf1;
-                         }
-
-                     }
-                 }       /* useIOBuffer */
-             } /* IAmUsedAgg */
-             else if (useIOBuffer) {
-                 if (roundIter < (numberOfRounds - 1)) {
-                     if (currentReadBuf == 0) {
-                         currentReadBuf = 1;
-                         read_buf = read_buf1;
-                     } else {
-                         currentReadBuf = 0;
-                         read_buf = read_buf0;
-                     }
+                 int amountDataToReadThisRound;
+                 if ((fd_end[myAggRank] - currentRoundFDStart) < coll_bufsize) {
+                     currentRoundFDEnd = fd_end[myAggRank];
+                     amountDataToReadThisRound = ((currentRoundFDEnd - currentRoundFDStart) + 1);
                  } else {
-                     if (currentReadBuf == 0) {
-                         read_buf = read_buf0;
-                     } else {
-                         read_buf = read_buf1;
-                     }
+                     currentRoundFDEnd = currentRoundFDStart + coll_bufsize - (ADIO_Offset_CA) 1;
+                     amountDataToReadThisRound = coll_bufsize;
                  }
 
-             }
+                if (ca_data->check_req) {
+                    MPIO_Wait(&ca_data->io_Request, error_code);
+                    ca_data->check_req = 0;
+                }
+
+                /* read currentRoundFDEnd bytes */
+                MPI_File_iread_at(ca_data->fh, currentRoundFDStart, read_buf, amountDataToReadThisRound, MPI_BYTE, &ca_data->io_Request);
+
+                if (ca_data->async_io_outer) {
+                    ca_data->check_req = 1;
+                } else {
+                    MPIO_Wait(&ca_data->io_Request, error_code);
+                    ca_data->check_req = 0;
+                }
+
+             } /* IAmUsedAgg */
 
          } // (iAmUsedAgg || stripe_parms->iWasUsedStripingAgg)
 
-         // wait until the read buffers are full before we start pulling from the source procs
+         /* wait until the read buffers are full before we start pulling from the source procs */
          MPI_Barrier(ca_data->comm);
 
          if ((contig_access_count > 0) && (buf != NULL) && lenListOverZero) {
@@ -6189,7 +6111,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                      int sourceAggContigAccessCount = 0;
 
                      /* These data structures are used for the derived datatype mpi_get
-                     * in the romio_read_aggmethod of 2 case.
+                     * in the onesided_read_aggmethod of 2 case.
                      */
                      int *sourceAggBlockLengths = NULL;
                      MPI_Aint *sourceAggDisplacements = NULL, *recvBufferDisplacements = NULL;
@@ -6207,7 +6129,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                      for (offsetIter = startingOffLenIndex; offsetIter <= endingOffLenIndex; offsetIter++) {
 
                          if (currentRoundFDEndForMySourceAgg > sourceAggsForMyDataFDEnd[aggIter])
-                         currentRoundFDEndForMySourceAgg = sourceAggsForMyDataFDEnd[aggIter];
+                             currentRoundFDEndForMySourceAgg = sourceAggsForMyDataFDEnd[aggIter];
 
                          ADIO_Offset_CA offsetStart = offset_list[offsetIter], offsetEnd = (offset_list[offsetIter] + len_list[offsetIter] - (ADIO_Offset_CA) 1);
 
@@ -6217,14 +6139,14 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
 
                          if ((offsetStart >= currentRoundFDStartForMySourceAgg) && (offsetStart <= currentRoundFDEndForMySourceAgg)) {
                              if (offsetEnd > currentRoundFDEndForMySourceAgg)
-                             bufferAmountToRecv = (currentRoundFDEndForMySourceAgg - offsetStart) + 1;
+                                 bufferAmountToRecv = (currentRoundFDEndForMySourceAgg - offsetStart) + 1;
                              else
-                             bufferAmountToRecv = (offsetEnd - offsetStart) + 1;
+                                 bufferAmountToRecv = (offsetEnd - offsetStart) + 1;
                          } else if ((offsetEnd >= currentRoundFDStartForMySourceAgg) && (offsetEnd <= currentRoundFDEndForMySourceAgg)) {
                              if (offsetEnd > currentRoundFDEndForMySourceAgg)
-                             bufferAmountToRecv = (currentRoundFDEndForMySourceAgg - currentRoundFDStartForMySourceAgg) + 1;
+                                 bufferAmountToRecv = (currentRoundFDEndForMySourceAgg - currentRoundFDStartForMySourceAgg) + 1;
                              else
-                             bufferAmountToRecv = (offsetEnd - currentRoundFDStartForMySourceAgg) + 1;
+                                 bufferAmountToRecv = (offsetEnd - currentRoundFDStartForMySourceAgg) + 1;
                              if (offsetStart < currentRoundFDStartForMySourceAgg) {
                                  offsetStart = currentRoundFDStartForMySourceAgg;
                              }
@@ -6234,7 +6156,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                          }
 
                          if (bufferAmountToRecv > 0) {   /* we have data to recv this round */
-                             if (ca_data->romio_read_aggmethod == 2) {
+                             if (ca_data->onesided_read_aggmethod == 2) {
                                  /* Only allocate these arrays if we are using method 2 and only do it once for this round/source agg.
                                  */
                                  if (!allocatedDerivedTypeArrays) {
@@ -6245,15 +6167,15 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                                      if (!bufTypeIsContig) {
                                          int k;
                                          for (k = sourceAggsForMyDataFirstOffLenIndex[roundIter][aggIter]; k <= sourceAggsForMyDataLastOffLenIndex[roundIter][aggIter]; k++)
-                                         amountOfDataReadThisRoundAgg += len_list[k];
+                                             amountOfDataReadThisRoundAgg += len_list[k];
 
-                                         #ifdef onesidedtrace
-                                         printf("derivedTypePackedSourceBuffer mallocing %ld\n", amountOfDataReadThisRoundAgg);
-                                         #endif
+#ifdef onesidedtrace
+                                         printf("Rank %d - derivedTypePackedSourceBuffer mallocing %ld\n", myrank,amountOfDataReadThisRoundAgg);
+#endif
                                          if (amountOfDataReadThisRoundAgg > 0)
-                                         derivedTypePackedSourceBuffer = (char *) H5MM_malloc(amountOfDataReadThisRoundAgg * sizeof(char));
+                                             derivedTypePackedSourceBuffer = (char *) H5MM_malloc(amountOfDataReadThisRoundAgg * sizeof(char));
                                          else
-                                         derivedTypePackedSourceBuffer = NULL;
+                                             derivedTypePackedSourceBuffer = NULL;
                                      }
                                      allocatedDerivedTypeArrays = 1;
                                  }
@@ -6263,40 +6185,42 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                              */
                              MPI_Aint sourceDisplacementToUseThisRound = (MPI_Aint) (offsetStart - currentRoundFDStartForMySourceAgg);
 
-                             /* If using the thread reader select the appropriate side of the split window.
-                             */
-                             if (useIOBuffer && (read_buf == read_buf1)) {
-                                 sourceDisplacementToUseThisRound += (MPI_Aint) coll_bufsize;
-                             }
-
-                             /* For romio_read_aggmethod of 1 do the mpi_get using the primitive MPI_BYTE type from each
+                             /* For onesided_read_aggmethod of 1 do the mpi_get using the primitive MPI_BYTE type from each
                              * contiguous chunk from the target, if the source is non-contiguous then unpack the data after
                              * the MPI_Win_unlock is done to make sure the data has arrived first.
                              */
-                             if (ca_data->romio_read_aggmethod == 1) {
+                             if (ca_data->onesided_read_aggmethod == 1) {
+
                                  MPI_Win_lock(MPI_LOCK_SHARED, sourceAggsForMyData[aggIter], 0, read_buf_window);
+
                                  char *getSourceData = NULL;
                                  if (bufTypeIsContig) {
+
                                      MPI_Get(((char *) buf) + currentFDSourceBufferState[aggIter].sourceBufferOffset, bufferAmountToRecv, MPI_BYTE, sourceAggsForMyData[aggIter], sourceDisplacementToUseThisRound, bufferAmountToRecv, MPI_BYTE, read_buf_window);
                                      currentFDSourceBufferState[aggIter].sourceBufferOffset += (ADIO_Offset_CA) bufferAmountToRecv;
 
-                                 } else {
+                                 }
+                                 else {
+
                                      getSourceData = (char *) H5MM_malloc(bufferAmountToRecv * sizeof(char));
                                      MPI_Get(getSourceData, bufferAmountToRecv, MPI_BYTE, sourceAggsForMyData[aggIter], sourceDisplacementToUseThisRound, bufferAmountToRecv, MPI_BYTE, read_buf_window);
 
                                  }
+
                                  MPI_Win_unlock(sourceAggsForMyData[aggIter], read_buf_window);
+
                                  if (!bufTypeIsContig) {
-                                     nonContigSourceDataBufferAdvance_CA(((char *) buf), flatBuf, bufferAmountToRecv, 0, &currentFDSourceBufferState[aggIter], getSourceData);
+                                     H5FD_mpio_nc_buffer_advance(((char *) buf), flatBuf, bufferAmountToRecv, 0, &currentFDSourceBufferState[aggIter], getSourceData);
                                      H5MM_free(getSourceData);
                                  }
                              }
 
-                             /* For romio_read_aggmethod of 2 populate the data structures for this round/agg for this offset iter
+                             /* For onesided_read_aggmethod of 2 populate the data structures for this round/agg for this offset iter
                              * to be used subsequently when building the derived type for 1 mpi_get for all the data for this
                              * round/agg.
                              */
-                             else if (ca_data->romio_read_aggmethod == 2) {
+                             else if (ca_data->onesided_read_aggmethod == 2) {
+
                                  if (bufTypeIsContig) {
                                      sourceAggBlockLengths[sourceAggContigAccessCount] = bufferAmountToRecv;
                                      sourceAggDataTypes[sourceAggContigAccessCount] = MPI_BYTE;
@@ -6304,7 +6228,8 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                                      recvBufferDisplacements[sourceAggContigAccessCount] = (MPI_Aint) currentFDSourceBufferState[aggIter].sourceBufferOffset;
                                      currentFDSourceBufferState[aggIter].sourceBufferOffset += (ADIO_Offset_CA) bufferAmountToRecv;
                                      sourceAggContigAccessCount++;
-                                 } else {
+                                 }
+                                 else {
                                      sourceAggBlockLengths[sourceAggContigAccessCount] = bufferAmountToRecv;
                                      sourceAggDataTypes[sourceAggContigAccessCount] = MPI_BYTE;
                                      sourceAggDisplacements[sourceAggContigAccessCount] = sourceDisplacementToUseThisRound;
@@ -6316,10 +6241,10 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                          } // bufferAmountToRecv > 0
                      } // contig list
 
-                     /* For romio_read_aggmethod of 2 now build the derived type using
+                     /* For onesided_read_aggmethod of 2 now build the derived type using
                      * the data from this round/agg and do 1 single mpi_get.
                      */
-                     if (ca_data->romio_read_aggmethod == 2) {
+                     if (ca_data->onesided_read_aggmethod == 2) {
                          MPI_Datatype recvBufferDerivedDataType, sourceBufferDerivedDataType;
 
                          MPI_Type_create_struct(sourceAggContigAccessCount, sourceAggBlockLengths, recvBufferDisplacements, sourceAggDataTypes, &recvBufferDerivedDataType);
@@ -6330,15 +6255,23 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                          if (sourceAggContigAccessCount > 0) {
 
                              MPI_Win_lock(MPI_LOCK_SHARED, sourceAggsForMyData[aggIter], 0, read_buf_window);
+
                              if (bufTypeIsContig) {
+
                                  MPI_Get(((char *) buf), 1, recvBufferDerivedDataType, sourceAggsForMyData[aggIter], 0, 1, sourceBufferDerivedDataType, read_buf_window);
+
                              } else {
+
                                  MPI_Get(derivedTypePackedSourceBuffer, 1, recvBufferDerivedDataType, sourceAggsForMyData[aggIter], 0, 1, sourceBufferDerivedDataType, read_buf_window);
+
                              }
 
                              MPI_Win_unlock(sourceAggsForMyData[aggIter], read_buf_window);
+
                              if (!bufTypeIsContig) {
-                                 nonContigSourceDataBufferAdvance_CA(((char *) buf), flatBuf, derivedTypePackedSourceBufferOffset, 0, &currentFDSourceBufferState[aggIter], derivedTypePackedSourceBuffer);
+
+                                 H5FD_mpio_nc_buffer_advance(((char *) buf), flatBuf, derivedTypePackedSourceBufferOffset, 0, &currentFDSourceBufferState[aggIter], derivedTypePackedSourceBuffer);
+
                              }
                          }
 
@@ -6366,28 +6299,16 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                  stripe_parms->lastIndiceOffset = currentFDSourceBufferState[numSourceAggs-1].indiceOffset;
              }
 
-         } // contig_access_count > 0
+         } /* contig_access_count > 0 */
 
          /* the source procs recv the requested data to the aggs */
 
          /* Synchronize all procs */
-         MPI_Barrier(ca_data->comm);  // SINGLE RANK GETTING STUCK HERE??
+         MPI_Barrier(ca_data->comm);
 
          nextRoundFDStart = currentRoundFDStart + coll_bufsize;
 
      }   /* for-loop roundIter */
-
-     #ifdef ROMIO_GPFS
-     endTimeBase = MPI_Wtime();
-     gpfsmpio_prof_cw[GPFSMPIO_CIO_T_DEXCH] += (endTimeBase - startTimeBase);
-     #endif
-
-     if (useIOBuffer) {  /* thread readr cleanup */
-         if (!pthread_equal(io_thread, pthread_self())) {
-             pthread_join(io_thread, &thread_ret);
-             *error_code = *(int *) thread_ret;
-         }
-     }
 
      H5MM_free(sourceAggsForMyData);
      H5MM_free(sourceAggsForMyDataFDStart);
