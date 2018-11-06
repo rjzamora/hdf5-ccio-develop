@@ -631,7 +631,7 @@ H5D__contig_collective_read(H5D_io_info_t *io_info, const H5D_type_info_t *type_
 
     /* Check for CCIO-read option */
     do_custom_agg = HDgetenv("HDF5_CCIO_RD");
-    if (0) { //}(do_custom_agg && (strcmp(do_custom_agg,"yes") == 0)) {
+    if (do_custom_agg && (strcmp(do_custom_agg,"yes") == 0)) {
 
         /* Call select_read (rather than `inter_collective` if using CCIO) */
         file_space_hid = H5I_register(H5I_DATASPACE, file_space, TRUE);
@@ -640,8 +640,8 @@ H5D__contig_collective_read(H5D_io_info_t *io_info, const H5D_type_info_t *type_
         /* Contiguous storage info for this I/O operation: */
         store_contig = &(io_info->store->contig);
 
-        //if(H5F_select_read(io_info->dset->oloc.file, H5CX_get_dxpl(), H5FD_MEM_DRAW, file_space_hid, mem_space_hid, (size_t)type_info->src_type_size,  store_contig->dset_addr, io_info->u.rbuf) < 0)
-        //    HGOTO_ERROR(H5E_IO, H5E_READERROR, FAIL, "can't finish collective parallel read")
+        if(H5F_select_read(io_info->dset->oloc.file, H5FD_MEM_DRAW, file_space_hid, mem_space_hid, (size_t)type_info->src_type_size,  store_contig->dset_addr, io_info->u.rbuf) < 0)
+            HGOTO_ERROR(H5E_IO, H5E_READERROR, FAIL, "can't finish collective parallel read")
 
         if(NULL != ((H5S_t *)H5I_object_verify(file_space_hid, H5I_DATASPACE)))
             H5Sclose(file_space_hid);

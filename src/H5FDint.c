@@ -269,8 +269,7 @@ done:
  */
 herr_t
 H5FD_select_read(H5FD_t *file, H5FD_mem_t type,
-    hid_t file_space, hid_t mem_space, size_t elmt_size,
-    haddr_t addr, void *buf/*out*/)
+    hid_t file_space, hid_t mem_space, size_t elmt_size, haddr_t addr, void *buf/*out*/)
 {
 
     hid_t           dxpl_id = H5I_INVALID_HID;  /* DXPL for operation */
@@ -282,6 +281,7 @@ H5FD_select_read(H5FD_t *file, H5FD_mem_t type,
     /* Sanity checks */
     HDassert(file);
     HDassert(file->cls);
+    HDassert(file->cls->select_read);
     HDassert(buf);
 
     /* Get proper DXPL for I/O */
