@@ -3114,7 +3114,7 @@ void H5FD_mpio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, MPI_O
             fprintf(stdout,"\n");
         }
         MPI_Barrier(ca_data->comm);
-#ifdef onesidedtrace
+#endif
     }
 
     /* Async I/O - Make sure we are starting with the main buffer */
