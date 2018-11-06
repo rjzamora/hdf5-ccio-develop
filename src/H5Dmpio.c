@@ -630,7 +630,7 @@ H5D__contig_collective_read(H5D_io_info_t *io_info, const H5D_type_info_t *type_
     HDassert(H5FD_MPIO == H5F_DRIVER_ID(io_info->dset->oloc.file));
 
     /* Check for CCIO-read option */
-    do_custom_agg = HDgetenv("HDF5_CUSTOM_AGG_RD");
+    do_custom_agg = HDgetenv("HDF5_CCIO_RD");
     if (0) { //}(do_custom_agg && (strcmp(do_custom_agg,"yes") == 0)) {
 
         /* Call select_read (rather than `inter_collective` if using CCIO) */
@@ -697,7 +697,7 @@ H5D__contig_collective_write(H5D_io_info_t *io_info, const H5D_type_info_t *type
     HDassert(H5FD_MPIO == H5F_DRIVER_ID(io_info->dset->oloc.file));
 
     /* Check for CCIO-write option */
-    do_custom_agg = HDgetenv("HDF5_CUSTOM_AGG_WR");
+    do_custom_agg = HDgetenv("HDF5_CCIO_WR");
     if (do_custom_agg && (strcmp(do_custom_agg,"yes") == 0)) {
 
         /* Call select_write (rather than `inter_collective` if using CCIO) */

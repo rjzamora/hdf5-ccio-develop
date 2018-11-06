@@ -32,6 +32,7 @@
 #include "H5Iprivate.h"		/* IDs			  		*/
 #include "H5MMprivate.h"	/* Memory management			*/
 #include "H5Pprivate.h"         /* Property lists                       */
+#include "H5FDmpio_topology.h"  /* Topology API                         */
 
 //#define onesidedtrace
 #ifdef H5_HAVE_PARALLEL
@@ -57,6 +58,7 @@ typedef struct CustomAgg_FH_Struct_Data {
     int ccio_read;
     int ccio_write;
     int cb_nodes;
+    int topo_cb_select;
     int cb_buffer_size;
     int fs_block_count;
     int fs_block_size;
@@ -2720,6 +2722,8 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
     char *ccio_wr_method = HDgetenv("HDF5_CCIO_WR_METHOD");
     char *do_async_io = HDgetenv("HDF5_CCIO_ASYNC");
     char *set_cb_nodes_stride = HDgetenv("HDF5_CCIO_CB_STRIDE");
+    char *use_file_system = HDgetenv("HDF5_CCIO_FS");
+    char *do_topo_select = HDgetenv("HDF5_CCIO_TOPO_CB_SELECT");
     int custom_agg_debug = 0;
     int mpi_rank = file->mpi_rank;       /* MPI rank of this process */
     int mpi_size = file->mpi_size;       /* Total number of MPI processes */
@@ -2736,13 +2740,14 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
     file->custom_agg_data.ccio_read = 0;
     file->custom_agg_data.ccio_write = 0;
     file->custom_agg_data.cb_nodes = 1;
-    file->custom_agg_data.cb_buffer_size = 16777216; //1048576;
+    file->custom_agg_data.cb_buffer_size = 1048576;
     file->custom_agg_data.fs_block_count = 1;
     file->custom_agg_data.fs_block_size = 1048576;
     file->custom_agg_data.onesided_always_rmw = 0;
     file->custom_agg_data.onesided_no_rmw = 1;
     file->custom_agg_data.onesided_inform_rmw = 0;
     file->custom_agg_data.onesided_write_aggmethod = 1;
+    file->custom_agg_data.topo_cb_select = 0;
 
     if (do_custom_agg_wr && (strcmp(do_custom_agg_wr,"yes") == 0)) {
         file->custom_agg_data.ccio_write = 1;
@@ -2818,6 +2823,15 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
             file->custom_agg_data.ranklist[i] = i*cb_nodes_stride;
         }
 
+        /*
+         * Here, we can check the HDF5_CCIO_TOPO_CB_SELECT env variable.
+         * If "yes," set file->custom_agg_data.topo_cb_select = 1;
+         */
+        if (do_topo_select && (strcmp(do_topo_select,"yes") == 0)) {
+            file->custom_agg_data.topo_cb_select = 1;
+        }
+
+        /* Show the aggregator ranks if we are in debug mode */
         if (custom_agg_debug && (mpi_rank == 0)) {
             fprintf(stdout,"DEBUG: file->custom_agg_data.cb_nodes is now set to %d romio_aggregator_list is:", file->custom_agg_data.cb_nodes);
             for (i=0;i<file->custom_agg_data.cb_nodes;i++)
@@ -2825,8 +2839,6 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
             fprintf(stdout,"\n");
             fflush(stdout);
         }
-
-        /* !!! ADD TOPOLOGY API CALL HERE !!! */
 
     }
 
@@ -3090,6 +3102,20 @@ void H5FD_mpio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, MPI_O
     printf("Rank %d - ca_data->cb_buffer_size is %lu fs_block_info[0] is %d fs_block_info[1] is %d fs_block_info[2] is %d\n",myrank,ca_data->cb_buffer_size,fs_block_info[0],fs_block_info[1],fs_block_info[2]);
     fflush(stdout);
 #endif
+
+    /* Select Topology-aware list of cb_nodes if desired */
+    if (ca_data->topo_cb_select) {
+        topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->comm );
+#ifdef onesidedtrace
+        if (myrank == 0) {
+            fprintf(stdout,"Topology-aware CB Selection: ca_data->cb_nodes is %d, and ranklist is:", ca_data->cb_nodes);
+            for (i=0;i<ca_data->cb_nodes;i++)
+                fprintf(stdout," %d",ca_data->ranklist[i]);
+            fprintf(stdout,"\n");
+        }
+        MPI_Barrier(ca_data->comm);
+#ifdef onesidedtrace
+    }
 
     /* Async I/O - Make sure we are starting with the main buffer */
     ca_data->use_dup = 0;
