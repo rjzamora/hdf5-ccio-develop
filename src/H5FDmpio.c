@@ -75,7 +75,9 @@ typedef struct CustomAgg_FH_Struct_Data {
     MPI_Win io_buf_window_d; /* Duplicate for "outer" async IO */
     MPI_Win io_buf_put_amounts_window_d; /* Duplicate for "outer" async IO */
     MPIO_Request io_Request;
+    MPIO_Request io_Request_d;
     int check_req;
+    int check_req_d;
     int use_dup;
     /* ---------------------------------- */
 } CustomAgg_FH_Struct_Data;
@@ -178,7 +180,12 @@ void H5FD_mpio_ccio_osagg_read(CustomAgg_FH_Data ca_data,
     int numNonZeroDataOffsets,
     ADIO_Offset_CA *fd_start,
     ADIO_Offset_CA* fd_end,
-    FS_Block_Parms *stripe_parms);
+    FS_Block_Parms *stripe_parms,
+    int do_file_read);
+
+void H5FD_mpio_ccio_file_read(CustomAgg_FH_Data ca_data, int *error_code,
+    ADIO_Offset_CA firstFileOffset, ADIO_Offset_CA lastFileOffset,
+    ADIO_Offset_CA *fd_start, ADIO_Offset_CA* fd_end);
 
 /***********************************/
 /* END CCIO Typedefs and Functions */
@@ -2973,11 +2980,11 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
         /* TODO: Can we handle multiple stripes per aggregator?
          * For now, just pretend like the stripe size is the same as the buffer size...
          */
-        //int stripes_per_cb_buf = file->custom_agg_data.cb_buffer_size / file->custom_agg_data.fs_block_size;
-        //if ( stripes_per_cb_buf > 1 ) {
-        //    file->custom_agg_data.fs_block_size = file->custom_agg_data.cb_buffer_size;
-        //    file->custom_agg_data.fs_block_count /= stripes_per_cb_buf;
-        //}
+        int stripes_per_cb_buf = file->custom_agg_data.cb_buffer_size / file->custom_agg_data.fs_block_size;
+        if ( stripes_per_cb_buf > 1 ) {
+            file->custom_agg_data.fs_block_size = file->custom_agg_data.cb_buffer_size;
+            file->custom_agg_data.fs_block_count /= stripes_per_cb_buf;
+        }
 
         int tot_cb_bufsize = (int)(file->custom_agg_data.cb_buffer_size);
         file->custom_agg_data.io_buf = (char *) H5MM_malloc(tot_cb_bufsize*sizeof(char));
@@ -2988,6 +2995,7 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
         /* Determine IF and HOW asynchronous I/O will be performed */
         file->custom_agg_data.async_io_outer = 0;
         file->custom_agg_data.check_req = 0;
+        file->custom_agg_data.check_req_d = 0;
         if (do_async_io && (strcmp(do_async_io,"yes") == 0)) {
             file->custom_agg_data.async_io_outer = 1;
             file->custom_agg_data.io_buf_d = (char *) H5MM_malloc(tot_cb_bufsize*sizeof(char));
@@ -3485,11 +3493,15 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     }
 
     /* Async I/O - Make sure we are starting with the main buffer */
-    ca_data->use_dup = 0;
     if (ca_data->check_req == 1) {
         MPIO_Wait(&ca_data->io_Request, error_code);
         ca_data->check_req = 0;
     }
+    if (ca_data->check_req_d == 1) {
+        MPIO_Wait(&ca_data->io_Request_d, error_code);
+        ca_data->check_req_d = 0;
+    }
+    ca_data->use_dup = 0;
 
     /* Iterate over 1+ aggregation rounds and read to mem when buffers are full */
     H5FD_mpio_ccio_iterate_read(ca_data, buf, fs_block_info, offset_list, len_list, mpi_off, contig_access_count, currentNonZeroDataIndex, start_offset, end_offset, firstFileOffset, lastFileOffset, memFlatBuf, fileFlatBuf, myrank, error_code);
@@ -3498,6 +3510,10 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     if (ca_data->check_req == 1) {
         MPIO_Wait(&ca_data->io_Request, error_code);
         ca_data->check_req = 0;
+    }
+    if (ca_data->check_req_d == 1) {
+        MPIO_Wait(&ca_data->io_Request_d, error_code);
+        ca_data->check_req_d = 0;
     }
     ca_data->use_dup = 0;
 
@@ -3931,6 +3947,12 @@ void H5FD_mpio_ccio_iterate_write(CustomAgg_FH_Data ca_data, const void *buf,
     */
     ADIO_Offset_CA *segment_stripe_start = (ADIO_Offset_CA *) H5MM_malloc(numStripedAggs*sizeof(ADIO_Offset_CA));
     ADIO_Offset_CA *segment_stripe_end = (ADIO_Offset_CA *) H5MM_malloc(numStripedAggs*sizeof(ADIO_Offset_CA));
+    ADIO_Offset_CA *segment_stripe_start_next;
+    ADIO_Offset_CA *segment_stripe_end_next;
+    if (ca_data->async_io_outer) {
+        segment_stripe_start_next = (ADIO_Offset_CA *) H5MM_malloc(numStripedAggs*sizeof(ADIO_Offset_CA));
+        segment_stripe_end_next = (ADIO_Offset_CA *) H5MM_malloc(numStripedAggs*sizeof(ADIO_Offset_CA));
+    }
 
     /* Find the actual range of stripes in the file that have data in the offset
     * ranges being written -- skip holes at the front and back of the file.
@@ -3973,20 +3995,28 @@ void H5FD_mpio_ccio_iterate_write(CustomAgg_FH_Data ca_data, const void *buf,
 
     int totalDataReadLastRound = 0;
 
+    /* Use 'next' read offsets for async I/O */
+    ADIO_Offset_CA segmentFirstFileOffset_next, segmentLastFileOffset_next;
+
+    /* Async I/O - Start with use_dup==0 */
+    ca_data->use_dup = 0;
+
     /* Now, we iterate trhough all the segments that we want to read */
     for (fileSegmentIter=0;fileSegmentIter < numSegments;fileSegmentIter++) {
 
         int dataReadThisRound = 0;
 
+        ADIO_Offset_CA segmentFirstFileOffset, segmentLastFileOffset;
+
         /* Define the segment range in terms of a file offsets.
         * Just increment the offset from the previous 'currentSegementOffset'
         */
-        ADIO_Offset_CA segmentFirstFileOffset = currentSegementOffset;
+        segmentFirstFileOffset = currentSegementOffset;
         if ((currentSegementOffset+stripeParms.segmentLen-(ADIO_Offset_CA)1) > lastFileOffset)
             currentSegementOffset = lastFileOffset;
         else
             currentSegementOffset += (stripeParms.segmentLen-(ADIO_Offset_CA)1);
-        ADIO_Offset_CA segmentLastFileOffset = currentSegementOffset;
+        segmentLastFileOffset = currentSegementOffset;
         currentSegementOffset++; // shifting by one byte offset
 
         ADIO_Offset_CA segment_stripe_offset = segmentFirstFileOffset;
@@ -4000,6 +4030,30 @@ void H5FD_mpio_ccio_iterate_write(CustomAgg_FH_Data ca_data, const void *buf,
             else
                 segment_stripe_end[i] = segment_stripe_offset + (ADIO_Offset_CA)(fs_block_info[0]) - (ADIO_Offset_CA)1;
             segment_stripe_offset += (ADIO_Offset_CA)(fs_block_info[0]);
+        }
+
+        if ((ca_data->async_io_outer) && (fileSegmentIter<(numSegments-1)) && (numSegments>1)) {
+            ADIO_Offset_CA cso_prev = currentSegementOffset;
+            segmentFirstFileOffset_next = cso_prev;
+            if ((cso_prev+stripeParms.segmentLen-(ADIO_Offset_CA)1) > lastFileOffset)
+                cso_prev = lastFileOffset;
+            else
+                cso_prev += (stripeParms.segmentLen-(ADIO_Offset_CA)1);
+            segmentLastFileOffset_next = cso_prev;
+
+            ADIO_Offset_CA sso_next = segmentFirstFileOffset_next;
+            for (i=0;i<numStripedAggs;i++) {
+                if (firstFileOffset > sso_next)
+                    segment_stripe_start_next[i] = firstFileOffset;
+                else
+                    segment_stripe_start_next[i] = sso_next;
+                if ((sso_next + (ADIO_Offset_CA)(fs_block_info[0])) > lastFileOffset)
+                    segment_stripe_end_next[i] = lastFileOffset;
+                else
+                    segment_stripe_end_next[i] = sso_next + (ADIO_Offset_CA)(fs_block_info[0]) - (ADIO_Offset_CA)1;
+                sso_next += (ADIO_Offset_CA)(fs_block_info[0]);
+            }
+
         }
 
         /* In the interest of performance for non-contiguous data with large offset lists
@@ -4116,14 +4170,62 @@ void H5FD_mpio_ccio_iterate_write(CustomAgg_FH_Data ca_data, const void *buf,
         * H5FD_mpio_ccio_osagg_read changes at the expense of some added complexity to the caller.
         */
 
-        if (memFlatBuf->count == 1) {
-            H5FD_mpio_ccio_osagg_read(ca_data,(ADIO_Offset_CA*)&(offset_list[startingOffsetListIndex]), (ADIO_Offset_CA*)&(len_list[startingOffsetListIndex]), segmentContigAccessCount, buf+totalDataReadLastRound, memFlatBuf, error_code, segmentFirstFileOffset, segmentLastFileOffset, currentValidDataIndex, segment_stripe_start, segment_stripe_end, &stripeParms);
-        } else {
-            H5FD_mpio_ccio_osagg_read(ca_data,(ADIO_Offset_CA*)&(offset_list[startingOffsetListIndex]), (ADIO_Offset_CA*)&(len_list[startingOffsetListIndex]), segmentContigAccessCount, buf, memFlatBuf, error_code, segmentFirstFileOffset, segmentLastFileOffset, currentValidDataIndex, segment_stripe_start, segment_stripe_end, &stripeParms);
+        /* Async I/O - Create a pipeline of 'reads' */
+        if ((ca_data->async_io_outer) && (fileSegmentIter==0) && (numSegments>1)) {
+
+            /* Read data from file into aggregator buffers */
+            H5FD_mpio_ccio_file_read(ca_data, error_code, segmentFirstFileOffset, segmentLastFileOffset, segment_stripe_start, segment_stripe_end);
+
+            /* Async I/O - Start prefetch of next iteration with duplite buffer */
+            ca_data->use_dup = (ca_data->use_dup + 1) % 2;
+
+            /* Read data from file into aggregator buffers for NEXT interation */
+            H5FD_mpio_ccio_file_read(ca_data, error_code, segmentFirstFileOffset_next, segmentLastFileOffset_next, segment_stripe_start_next, segment_stripe_end_next);
+
+            /* Async I/O - Switch back to current buffer */
+            ca_data->use_dup = (ca_data->use_dup + 1) % 2;
+
+        } else if ((ca_data->async_io_outer) && (fileSegmentIter<(numSegments-1)) && (numSegments>1)) {
+
+            /* Async I/O - Start prefetch of next iteration with duplite buffer */
+            ca_data->use_dup = (ca_data->use_dup + 1) % 2;
+
+            /* Read data from file into aggregator buffers for NEXT interation */
+            H5FD_mpio_ccio_file_read(ca_data, error_code, segmentFirstFileOffset_next, segmentLastFileOffset_next, segment_stripe_start_next, segment_stripe_end_next);
+
+            /* Async I/O - Switch back to current buffer */
+            ca_data->use_dup = (ca_data->use_dup + 1) % 2;
+
+        } else if ((!ca_data->async_io_outer) || (numSegments<2)) {
+
+            /* Read data from file into aggregator buffers */
+            H5FD_mpio_ccio_file_read(ca_data, error_code, segmentFirstFileOffset, segmentLastFileOffset, segment_stripe_start, segment_stripe_end);
+
         }
 
-        /* Async I/O - Switch between buffers */
-        if(ca_data->async_io_outer) {
+        /* Async I/O - Wait for necessary buffer to be ready for RMA */
+        if (ca_data->use_dup && ca_data->check_req_d) {
+            MPIO_Wait(&ca_data->io_Request_d, error_code);
+            ca_data->check_req_d = 0;
+        } else if (!ca_data->use_dup && ca_data->check_req) {
+            MPIO_Wait(&ca_data->io_Request, error_code);
+            ca_data->check_req = 0;
+        }
+
+        if (memFlatBuf->count == 1) {
+
+            /* Ranks perform one-sided read of data from collective buffers */
+            H5FD_mpio_ccio_osagg_read(ca_data,(ADIO_Offset_CA*)&(offset_list[startingOffsetListIndex]), (ADIO_Offset_CA*)&(len_list[startingOffsetListIndex]), segmentContigAccessCount, buf+totalDataReadLastRound, memFlatBuf, error_code, segmentFirstFileOffset, segmentLastFileOffset, currentValidDataIndex, segment_stripe_start, segment_stripe_end, &stripeParms, 0); // Last '0' means the file read should be skipped in this call
+
+        } else {
+
+            /* Ranks perform one-sided read of data from collective buffers */
+            H5FD_mpio_ccio_osagg_read(ca_data,(ADIO_Offset_CA*)&(offset_list[startingOffsetListIndex]), (ADIO_Offset_CA*)&(len_list[startingOffsetListIndex]), segmentContigAccessCount, buf, memFlatBuf, error_code, segmentFirstFileOffset, segmentLastFileOffset, currentValidDataIndex, segment_stripe_start, segment_stripe_end, &stripeParms, 0); // Last '0' means the file read should be skipped in this call
+
+        }
+
+        /* Async I/O - change 'current' buffer */
+        if ((ca_data->async_io_outer) && (numSegments>1)) {
             ca_data->use_dup = (ca_data->use_dup + 1) % 2;
         }
 
@@ -4156,6 +4258,10 @@ void H5FD_mpio_ccio_iterate_write(CustomAgg_FH_Data ca_data, const void *buf,
 
     H5MM_free(segment_stripe_start);
     H5MM_free(segment_stripe_end);
+    if (ca_data->async_io_outer) {
+        H5MM_free(segment_stripe_start_next);
+        H5MM_free(segment_stripe_end_next);
+    }
 
 } /* End IterateOneSidedRead */
 
@@ -5461,7 +5567,8 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
      int numNonZeroDataOffsets,
      ADIO_Offset_CA *fd_start,
      ADIO_Offset_CA* fd_end,
-     FS_Block_Parms *stripe_parms)
+     FS_Block_Parms *stripe_parms,
+     int do_file_read)
  {
      int i,j; /* generic iterators */
 
@@ -6073,19 +6180,27 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                      amountDataToReadThisRound = coll_bufsize;
                  }
 
-                if (ca_data->check_req) {
-                    MPIO_Wait(&ca_data->io_Request, error_code);
-                    ca_data->check_req = 0;
-                }
+                 /*
+                  *  Don't actually do the read if it was already done
+                  *  (asynchronously) outside this function call...
+                  */
+                 if (do_file_read) {
 
-                /* read currentRoundFDEnd bytes */
-                MPI_File_iread_at(ca_data->fh, currentRoundFDStart, read_buf, amountDataToReadThisRound, MPI_BYTE, &ca_data->io_Request);
+                    if (ca_data->check_req) {
+                        MPIO_Wait(&ca_data->io_Request, error_code);
+                        ca_data->check_req = 0;
+                    }
 
-                if (0 && ca_data->async_io_outer) { /* Async I/O is disabled, because the algorithm will not work */
-                    ca_data->check_req = 1;
-                } else {
-                    MPIO_Wait(&ca_data->io_Request, error_code);
-                    ca_data->check_req = 0;
+                    /* read currentRoundFDEnd bytes */
+                    MPI_File_iread_at(ca_data->fh, currentRoundFDStart, read_buf, amountDataToReadThisRound, MPI_BYTE, &ca_data->io_Request);
+
+                    if (0 && ca_data->async_io_outer) { /* Async I/O is disabled, because the algorithm will not work */
+                        ca_data->check_req = 1;
+                    } else {
+                        MPIO_Wait(&ca_data->io_Request, error_code);
+                        ca_data->check_req = 0;
+                    }
+
                 }
 
              } /* IAmUsedAgg */
@@ -6323,5 +6438,121 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
 
      return;
  } /* H5FD_mpio_ccio_osagg_read */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    H5FD_mpio_ccio_file_read
+ *
+ * Purpose:     Read data from file into aggregators
+ *
+ *-------------------------------------------------------------------------
+ */
+void H5FD_mpio_ccio_file_read(CustomAgg_FH_Data ca_data, int *error_code,
+    ADIO_Offset_CA firstFileOffset, ADIO_Offset_CA lastFileOffset,
+    ADIO_Offset_CA *fd_start, ADIO_Offset_CA* fd_end)
+ {
+     int i,j; /* generic iterators */
+     int naggs, iAmUsedAgg, myAggRank;
+     MPI_Status status;
+     int nprocs, myrank;
+     int greatestFileDomainAggRank, smallestFileDomainAggRank;
+     ADIO_Offset_CA greatestFileDomainOffset, smallestFileDomainOffset;
+     ADIO_Offset_CA coll_bufsize;
+     ADIO_Offset_CA readFDStart;
+     ADIO_Offset_CA readFDEnd;
+
+     *error_code = MPI_SUCCESS; /* initialize to success */
+     MPI_Comm_size(ca_data->comm, &nprocs);
+     MPI_Comm_rank(ca_data->comm, &myrank);
+
+     naggs = ca_data->cb_nodes;
+     iAmUsedAgg = 0; /* whether or not this rank is used as an aggregator. */
+     myAggRank = -1; /* if I am an aggregor this is my index into ranklist */
+     coll_bufsize = (ADIO_Offset_CA)(ca_data->cb_buffer_size);
+
+     /*
+      * Confirm that we are only dealing with ONE round here...
+      */
+     int numberOfRounds = 0;
+     for (j=0;j<naggs;j++) {
+         int currentNumberOfRounds = (int)(((fd_end[j] - fd_start[j])+(ADIO_Offset_CA)1)/coll_bufsize);
+         if ( ( (ADIO_Offset_CA)currentNumberOfRounds*coll_bufsize ) < ((fd_end[j] - fd_start[j])+(ADIO_Offset_CA)1))
+             currentNumberOfRounds++;
+         if (currentNumberOfRounds > numberOfRounds)
+             numberOfRounds = currentNumberOfRounds;
+     }
+     if (numberOfRounds > 1) {
+         printf("ERROR -- Use of H5FD_mpio_ccio_file_read assumes there are is only ONE round for the current aggregation segment!\n");
+     }
+
+#ifdef onesidedtrace
+    printf("Rank %d (use_dup == %d) called H5FD_mpio_ccio_file_read with segmentFirstFileOffset %d, segmentLastFileOffset %d, segment_stripe_start %d, segment_stripe_end %d. \n",myrank, ca_data->use_dup, (int)firstFileOffset, (int)lastFileOffset, (int)fd_start[0], (int)fd_end[0]);
+#endif
+
+     /* This logic defines values that are used later to determine what offsets define the portion
+     * of the file domain the agg is reading this round.
+     */
+     greatestFileDomainAggRank = -1;
+     smallestFileDomainAggRank = -1;
+     greatestFileDomainOffset = 0;
+     smallestFileDomainOffset = lastFileOffset;
+     for (j=0;j<naggs;j++) {
+         if (fd_end[j] > greatestFileDomainOffset) {
+             greatestFileDomainOffset = fd_end[j];
+             greatestFileDomainAggRank = j;
+         }
+         if (fd_start[j] < smallestFileDomainOffset) {
+             smallestFileDomainOffset = fd_start[j];
+             smallestFileDomainAggRank = j;
+         }
+         if (ca_data->ranklist[j] == myrank) {
+             myAggRank = j;
+             if (fd_end[j] > fd_start[j]) {
+                 iAmUsedAgg = 1;
+             }
+         }
+     }
+
+     readFDStart = 0;
+     readFDEnd = 0;
+     if (iAmUsedAgg) {
+
+         /* What offset to read from */
+         readFDStart = fd_start[myAggRank];
+         if (myAggRank == smallestFileDomainAggRank) {
+             if (readFDStart < firstFileOffset)
+                 readFDStart = firstFileOffset;
+         } else if (myAggRank == greatestFileDomainAggRank) {
+             if (readFDEnd > lastFileOffset)
+                 readFDEnd = lastFileOffset;
+         }
+
+         /* How much data to read */
+         int read_size;
+         if ((fd_end[myAggRank] - readFDStart) < coll_bufsize) {
+             readFDEnd = fd_end[myAggRank];
+             read_size = ((readFDEnd - readFDStart) + 1);
+         } else {
+             readFDEnd = readFDStart + coll_bufsize - (ADIO_Offset_CA) 1;
+             read_size = coll_bufsize;
+         }
+
+         /* Read 'read_size' bytes */
+         if (ca_data->use_dup) {
+             MPI_File_iread_at(ca_data->fh, readFDStart, ca_data->io_buf_d, read_size, MPI_BYTE, &ca_data->io_Request_d);
+             ca_data->check_req_d = 1;
+         }else {
+             MPI_File_iread_at(ca_data->fh, readFDStart, ca_data->io_buf, read_size, MPI_BYTE, &ca_data->io_Request);
+             ca_data->check_req = 1;
+         }
+
+     } // (iAmUsedAgg)
+
+     /* Synchronize all procs */
+     MPI_Barrier(ca_data->comm);
+
+     return;
+ } /* H5FD_mpio_ccio_file_read */
+
 
 #endif /* H5_HAVE_PARALLEL */
