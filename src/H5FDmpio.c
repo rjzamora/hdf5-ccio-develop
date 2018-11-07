@@ -3486,7 +3486,6 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 
     /* Async I/O - Make sure we are starting with the main buffer */
     ca_data->use_dup = 0;
-
     if (ca_data->check_req == 1) {
         MPIO_Wait(&ca_data->io_Request, error_code);
         ca_data->check_req = 0;
@@ -3496,11 +3495,11 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     H5FD_mpio_ccio_iterate_read(ca_data, buf, fs_block_info, offset_list, len_list, mpi_off, contig_access_count, currentNonZeroDataIndex, start_offset, end_offset, firstFileOffset, lastFileOffset, memFlatBuf, fileFlatBuf, myrank, error_code);
 
     /* Async I/O - Wait for any outstanding requests (we are done with this I/O call) */
-    ca_data->use_dup = 0;
     if (ca_data->check_req == 1) {
         MPIO_Wait(&ca_data->io_Request, error_code);
         ca_data->check_req = 0;
     }
+    ca_data->use_dup = 0;
 
     H5MM_free(offset_list);
     H5MM_free(len_list);
@@ -4128,15 +4127,15 @@ void H5FD_mpio_ccio_iterate_write(CustomAgg_FH_Data ca_data, const void *buf,
             ca_data->use_dup = (ca_data->use_dup + 1) % 2;
         }
 
-        if (stripeParms.flushCB) {
+        //if (stripeParms.flushCB) {
             stripeParms.segmentIter = 0;
             if (stripesPerAgg > (numSegments-fileSegmentIter-1))
             stripeParms.stripesPerAgg = numSegments-fileSegmentIter-1;
             else
             stripeParms.stripesPerAgg = stripesPerAgg;
-        }
-        else
-            stripeParms.segmentIter++;
+        //}
+        //else
+        //    stripeParms.segmentIter++;
 
         /* Need barrier here.
         */
@@ -4263,7 +4262,7 @@ inline static void H5FD_mpio_nc_buffer_advance(char *sourceDataBuffer,
 #ifdef onesidedtrace
     printf("source buf advanced to currentFlatBufIndice %d currentDataTypeExtent %ld currentIndiceOffset %ld\n",currentFlatBufIndice,currentDataTypeExtent,currentIndiceOffset);
 #endif
-}
+} /* H5FD_mpio_nc_buffer_advance */
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD_mpio_ccio_osagg_write
@@ -6082,7 +6081,7 @@ void H5FD_mpio_ccio_osagg_write(CustomAgg_FH_Data ca_data,
                 /* read currentRoundFDEnd bytes */
                 MPI_File_iread_at(ca_data->fh, currentRoundFDStart, read_buf, amountDataToReadThisRound, MPI_BYTE, &ca_data->io_Request);
 
-                if (ca_data->async_io_outer) {
+                if (0 && ca_data->async_io_outer) { /* Async I/O is disabled, because the algorithm will not work */
                     ca_data->check_req = 1;
                 } else {
                     MPIO_Wait(&ca_data->io_Request, error_code);
