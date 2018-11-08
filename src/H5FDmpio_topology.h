@@ -22,7 +22,8 @@
 #include <lustre/lustre_user.h>
 #define LNETS_PER_OST   7
 #define MAX_IONODES     392 /* 56 OSTs * 7 LNET */
-#elif defined(BGQ)
+#endif
+#ifdef BGQ
 #include <spi/include/kernel/location.h>
 #include <spi/include/kernel/process.h>
 #include <spi/include/kernel/memory.h>
@@ -121,7 +122,9 @@ static int CountProcsPerNode(int numTasks, int rank, MPI_Comm comm)
 int64_t network_bandwidth () {
 #ifdef THETA
     return 1800000;
-#elif defined(BGQ)
+#endif
+#ifdef BGQ
+    return 1800000;
 #endif
     // Default Value:
     return 1800000;
@@ -139,7 +142,9 @@ int64_t network_bandwidth () {
 int64_t network_latency () {
 #ifdef THETA
     return 30;
-#elif defined(BGQ)
+#endif
+#ifdef BGQ
+    return 30;
 #endif
     // Default Value:
     return 30;
@@ -168,7 +173,8 @@ void rank_to_coordinates ( int rank, int* coord ) {
     coord[2] = xyz.mesh_z;
     coord[3] = nid;
     coord[4] = sched_getcpu();
-#elif defined(BGQ)
+#endif
+#ifdef BGQ
     MPIX_Rank2torus( rank, coord );
 #endif
 }
@@ -197,7 +203,8 @@ int distance_between_ranks ( int src_rank, int dest_rank ) {
         if ( src_coord[d] != dest_coord[d] )
             distance++;
     }
-#elif defined(BGQ)
+#endif
+#ifdef BGQ
     int dim = 6, d, hops;
     int src_coord[dim], dest_coord[dim];
     //int dim, d, hops;
@@ -352,7 +359,8 @@ int distance_to_io_node ( int src_rank ) {
      * Fore now, just setting distance to 1:
      */
     return 1;
-#elif defined(BGQ)
+#endif
+#ifdef BGQ
     return MPIX_IO_distance ();
 #endif
 
