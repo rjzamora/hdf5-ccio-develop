@@ -4368,7 +4368,7 @@ inline static void H5FD_mpio_nc_buffer_advance(char *sourceDataBuffer,
 #ifdef onesidedtrace
     printf("source buf advanced to currentFlatBufIndice %d currentDataTypeExtent %ld currentIndiceOffset %ld\n",currentFlatBufIndice,currentDataTypeExtent,currentIndiceOffset);
 #endif
-} /* H5FD_mpio_nc_buffer_advance */
+}; /* H5FD_mpio_nc_buffer_advance */
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD_mpio_ccio_osagg_write

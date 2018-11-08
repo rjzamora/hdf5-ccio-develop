@@ -14,6 +14,7 @@
 /*********************/
 /* Define Statements */
 /*********************/
+//#define BGQ
 
 #ifdef THETA
 #include <pmi.h>
@@ -21,7 +22,7 @@
 #include <lustre/lustre_user.h>
 #define LNETS_PER_OST   7
 #define MAX_IONODES     392 /* 56 OSTs * 7 LNET */
-#elif BGQ
+#elif defined(BGQ)
 #include <spi/include/kernel/location.h>
 #include <spi/include/kernel/process.h>
 #include <spi/include/kernel/memory.h>
@@ -30,7 +31,7 @@
 #include <mpix.h>
 #endif
 
-#define MIN(a,b) (((a)<(b))?(a):(b))
+#define TMIN(a,b) (((a)<(b))?(a):(b))
 #define LARGE_PENALTY 1000000.0
 #define SMALL_PENALTY 1000.0 /* Note: This penalty is currently arbitrary */
 #define MAX_STR 1024
@@ -120,7 +121,7 @@ static int CountProcsPerNode(int numTasks, int rank, MPI_Comm comm)
 int64_t network_bandwidth () {
 #ifdef THETA
     return 1800000;
-#elif BGQ
+#elif defined(BGQ)
 #endif
     // Default Value:
     return 1800000;
@@ -138,7 +139,7 @@ int64_t network_bandwidth () {
 int64_t network_latency () {
 #ifdef THETA
     return 30;
-#elif BGQ
+#elif defined(BGQ)
 #endif
     // Default Value:
     return 30;
@@ -167,7 +168,7 @@ void rank_to_coordinates ( int rank, int* coord ) {
     coord[2] = xyz.mesh_z;
     coord[3] = nid;
     coord[4] = sched_getcpu();
-#elif BGQ
+#elif defined(BGQ)
     MPIX_Rank2torus( rank, coord );
 #endif
 }
@@ -196,7 +197,7 @@ int distance_between_ranks ( int src_rank, int dest_rank ) {
         if ( src_coord[d] != dest_coord[d] )
             distance++;
     }
-#elif BGQ
+#elif defined(BGQ)
     int dim = 6, d, hops;
     int src_coord[dim], dest_coord[dim];
     //int dim, d, hops;
@@ -210,7 +211,7 @@ int distance_between_ranks ( int src_rank, int dest_rank ) {
     for ( d = 0; d < dim; d++ ) {
         hops = abs ( dest_coord[d] - src_coord[d] );
         if ( hw.isTorus[d] == 1 )
-            hops = MIN ( hops, (int)hw.Size[d] - hops );
+            hops = TMIN ( hops, (int)hw.Size[d] - hops );
         distance += hops;
     }
 #endif
@@ -351,7 +352,7 @@ int distance_to_io_node ( int src_rank ) {
      * Fore now, just setting distance to 1:
      */
     return 1;
-#elif BGQ
+#elif defined(BGQ)
     return MPIX_IO_distance ();
 #endif
 
