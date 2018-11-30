@@ -3345,7 +3345,7 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
             topology_aware_ranklist_spread ( ca_data->cb_nodes, &(ca_data->ranklist[0]), ca_data->ppn, ca_data->pps, ca_data->comm );
         else
             topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, ca_data->comm );
-//#ifdef onesidedtrace
+#ifdef onesidedtrace
         if (myrank == 0) {
             fprintf(stdout,"Topology-aware CB Selection (type %d): ca_data->cb_nodes is %d, and ranklist is:", ca_data->topo_cb_select, ca_data->cb_nodes);
             for (i=0;i<ca_data->cb_nodes;i++)
@@ -3353,7 +3353,7 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
             fprintf(stdout,"\n");
         }
         MPI_Barrier(ca_data->comm);
-//#endif
+#endif
     }
 
     /* Async I/O - Make sure we are starting with the main buffer */
