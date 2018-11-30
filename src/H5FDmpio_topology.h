@@ -189,7 +189,7 @@ void rank_to_coordinates ( int rank, int* coord ) {
  *
  *-------------------------------------------------------------------------
  */
-int distance_between_ranks ( int src_rank, int dest_rank ) {
+int distance_between_ranks ( int src_rank, int dest_rank, int ppn, int pps ) {
     int distance = 0;
 
 #ifdef THETA
@@ -203,8 +203,7 @@ int distance_between_ranks ( int src_rank, int dest_rank ) {
         if ( src_coord[d] != dest_coord[d] )
             distance++;
     }
-#endif
-#ifdef BGQ
+#elif defined( BGQ )
     int dim = 6, d, hops;
     int src_coord[dim], dest_coord[dim];
     //int dim, d, hops;
@@ -221,6 +220,31 @@ int distance_between_ranks ( int src_rank, int dest_rank ) {
             hops = TMIN ( hops, (int)hw.Size[d] - hops );
         distance += hops;
     }
+#else
+
+    /*
+     * If we don't have topology information, but do know ppn & pps (per socket),
+     * just assume simple rank ordering.
+     * Assume 2 hops between nodes & 1 between sockets.
+     */
+    int same_node = 1;
+    int same_soc  = 0;
+    if (ppn > 0) {
+        int ind_i = (src_rank / ppn) * ppn;
+        int ind_f = (src_rank / ppn) * ppn + ppn;
+        if ( (dest_rank < ind_i) || (dest_rank >= ind_f) ) {
+            // NOT Inside same 'node'
+            same_node = 0;
+        }
+    }
+    if (same_node && (pps > 0)) {
+        int ind_i = (src_rank / pps) * pps;
+        int ind_m = (src_rank / pps) * pps + pps;
+        if ( (dest_rank >= ind_i) && (dest_rank < ind_m) ) same_soc = 1;
+    }
+    if (!same_soc)  distance++;
+    if (!same_node) distance++;
+
 #endif
 
     return distance;
@@ -369,6 +393,70 @@ int distance_to_io_node ( int src_rank ) {
 }
 
 /*-------------------------------------------------------------------------
+ * Function:    topology_aware_ranklist_spread
+ *
+ * Purpose:     Just start with a simple rank-based spacing between aggs, then
+ *              try to increase actual minimum distance between any two aggs.
+ *
+ * Return:      0 == Success. Populates int* agg_list
+ *
+ *-------------------------------------------------------------------------
+ */
+int topology_aware_ranklist_spread ( int64_t nb_aggr, int* agg_list, int ppn, int pps, MPI_Comm comm )
+{
+    int i, r, agg_ind, distance, nprocs, rank, stride;
+    cost aggr_cost, max_cost;
+
+    MPI_Comm_rank ( comm, &rank );
+    MPI_Comm_size ( comm, &nprocs );
+
+    /* Start with a simple aggregator placement */
+    stride = nprocs / nb_aggr;
+    for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
+        agg_list[ agg_ind ] = agg_ind * stride;
+    }
+
+    /*
+     * Loop through the aggs and adjust each one to MAXIMUIZE the
+     * minimum distance to another aggregator...
+     */
+    for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
+
+        aggr_cost.cost  = -1;
+        aggr_cost.rank  = rank;
+        max_cost.cost  = 0.0;
+        max_cost.rank  = 0;
+        //if ((rank == 0)) printf("starting with agg_rank = %d for agg_ind = %d.\n", agg_list[ agg_ind ], agg_ind);
+
+        /* Compute the "cost" (min distance) to other aggs */
+        for (r = 0; r < nb_aggr; r++ ) {
+            if (r != agg_ind) {
+                if (aggr_cost.rank == agg_list[ r ]) {
+                    aggr_cost.cost = 0;
+                    //printf("agg_ind = %d, rank %d cannot be chosen because its agg_ind %d already.\n", agg_ind, rank , r);
+                    break;
+                }
+                distance = distance_between_ranks ( aggr_cost.rank, agg_list[ r ], ppn, pps );
+                //printf("agg_ind = %d, rank %d is distance=%d from agg %d.\n", agg_ind, aggr_cost.rank, distance, r);
+                if (aggr_cost.cost < 0)
+                    aggr_cost.cost = distance;
+                else
+                    aggr_cost.cost = TMIN( distance, aggr_cost.cost );
+            }
+        }
+        if (aggr_cost.rank == agg_list[ agg_ind ]) aggr_cost.cost++; // Don't change agg if we are already good...
+
+        /* Determine the aggr with MAXIMUM cost (we want to maximize min distance) */
+        MPI_Allreduce ( &aggr_cost, &max_cost, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm );
+        agg_list[ agg_ind ] = max_cost.rank;
+        //printf("agg_ind = %d aggr_cost.rank = %d aggr_cost.cost = %f, max_cost.rank = %d, max_cost.cost = %f \n", agg_ind, aggr_cost.rank, aggr_cost.cost, max_cost.rank, max_cost.cost);
+
+    }
+
+    return 0;
+}
+
+/*-------------------------------------------------------------------------
  * Function:    topology_aware_list_serial
  *
  * Purpose:     Given a `tally` array (of bytes needed to/from each of nb_aggr
@@ -382,10 +470,10 @@ int distance_to_io_node ( int src_rank ) {
  *
  *-------------------------------------------------------------------------
  */
-int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list, MPI_Comm comm )
+int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list, int ppn, int pps, MPI_Comm comm )
 {
     int i, r, agg_ind, aggr_nprocs, nprocs, latency, bandwidth, distance_to_io, distance, rank;
-    int agg_to_calc, aggr_comm_rank, aggr_comm_size, ranks_per_agg, ppn, ind_i, ind_m, ind_f;
+    int agg_to_calc, aggr_comm_rank, aggr_comm_size, ranks_per_agg, ind_i, ind_m, ind_f;
     MPI_Comm_rank ( comm, &rank );
     MPI_Comm_size ( comm, &nprocs );
     int64_t *data_distribution;
@@ -399,7 +487,6 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
     bandwidth         = network_bandwidth ();
     data_distribution = (int64_t *) malloc (nprocs * sizeof(int64_t));
     world_ranks       = (int *) malloc (nprocs * sizeof(int));
-    ppn               = CountProcsPerNode(nprocs, rank, comm);
     min_stride        = nprocs / nb_aggr;
     //if (rank == 0) printf("ppn = %d \n",ppn);
     //if (rank == 0) printf("min_stride = %d \n",min_stride);
@@ -436,7 +523,7 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
         /* Compute the cost of aggregating data from the other ranks */
         for (r = 0; r < aggr_nprocs; r++ ) {
             if ( (rank != world_ranks[r]) && (data_distribution[r] > 0)) {
-                distance = distance_between_ranks ( rank, world_ranks[r] );
+                distance = distance_between_ranks ( rank, world_ranks[r], ppn, pps );
                 //printf("agg_ind = %d r = %d distance = %d \n", agg_ind, r , distance);
                 aggr_cost.cost += ( distance * latency + data_distribution[r] / bandwidth );
             }
@@ -450,17 +537,19 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
         agg_list[ agg_ind ] = min_cost.rank;
         //if (rank == 0) printf("agg_ind = %d min_cost.rank = %d min_cost.cost = %f\n",agg_ind,min_cost.rank,min_cost.cost);
 
+        //printf("agg_ind = %d rank = %d base_cost_penalty = %f aggr_cost.cost = %f\n",agg_ind,rank,base_cost_penalty,aggr_cost.cost);
+
         /*
          * Increase `base_cost_penalty` for rank that was just chosen.
          * Add smaller penalty if rank is on same node as the last selection.
-         * Add smaller penalty again if the rank is too close to the last selection.
          */
-        if (min_cost.rank == rank) base_cost_penalty += LARGE_PENALTY;
-        ind_i = (min_cost.rank / ppn) * ppn;
-        ind_f = (min_cost.rank / ppn) * ppn + ppn;
-        ind_m =  min_cost.rank + min_stride;
-        if ( (rank >= ind_i) && (rank < ind_f) ) base_cost_penalty += SMALL_PENALTY;
-        if ( (rank >= ind_i) && (rank < ind_m) ) base_cost_penalty += SMALL_PENALTY;
+        if (min_cost.rank == rank)
+            base_cost_penalty += LARGE_PENALTY;
+        else {
+            distance = distance_between_ranks ( rank, min_cost.rank, ppn, pps );
+            if (distance > 0)
+                base_cost_penalty += SMALL_PENALTY;
+        }
 
     }
 
@@ -534,6 +623,8 @@ int get_cb_config_list ( int64_t* data_lens, int64_t* offsets, int data_len, cha
     MPI_Comm_rank ( comm, &rank );
     MPI_Comm_size ( comm, &nprocs );
     MPI_Get_processor_name( name, &resultlen );
+    int ppn = CountProcsPerNode(nprocs, rank, comm);
+    int pps = ppn;
 
     /* Tally data quantities associated with each aggregator */
     data_to_send_per_aggr = (int64_t *) calloc (nb_aggr, sizeof (int64_t));
@@ -543,7 +634,7 @@ int get_cb_config_list ( int64_t* data_lens, int64_t* offsets, int data_len, cha
 
     /* Generate topology-aware list of aggregators */
     agg_list = (int *) calloc (nprocs, sizeof (int));
-    topology_aware_list_serial( data_to_send_per_aggr, nb_aggr, agg_list, comm );
+    topology_aware_list_serial( data_to_send_per_aggr, nb_aggr, agg_list, ppn, pps, comm );
 
     /* Reverse the order of the agg list..? */
     if ( cb_reverse && (strcmp(cb_reverse,"yes") == 0) ) {
@@ -583,7 +674,8 @@ int get_cb_config_list ( int64_t* data_lens, int64_t* offsets, int data_len, cha
  *
  *-------------------------------------------------------------------------
  */
-int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len, int *ranklist, int64_t buffer_size, int64_t nb_aggr, MPI_Comm comm )
+int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len,
+    int *ranklist, int64_t buffer_size, int64_t nb_aggr, int ppn, int pps, MPI_Comm comm )
 {
     int r;
     int64_t *data_to_send_per_aggr;
@@ -595,7 +687,7 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
     }
 
     /* Generate topology-aware list of aggregators */
-    topology_aware_list_serial( data_to_send_per_aggr, nb_aggr, ranklist, comm );
+    topology_aware_list_serial( data_to_send_per_aggr, nb_aggr, ranklist, ppn, pps, comm );
 
     return 0;
 }
