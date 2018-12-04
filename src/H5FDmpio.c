@@ -48,6 +48,13 @@ typedef struct CustomAgg_FH_Struct_Data *CustomAgg_FH_Data;
 typedef long ADIO_Offset_CA;
 
 /*
+ * FSLayout determines how aggregators will be mapped to the file
+ * LUSTRE -> Aggregators will be mapped to specific LUSTRE-like stripes
+ * GPFS   -> Aggregators will be each assigned to a contiguous file domain
+ */
+enum FSLayout{LUSTRE, GPFS};
+
+/*
  * Structure holding important info for CCIO options
  * (Must be populated at the MPI_File_open)
  */
@@ -85,6 +92,7 @@ typedef struct CustomAgg_FH_Struct_Data {
     int check_req_d;
     int use_dup;
     /* ---------------------------------- */
+    enum FSLayout fslayout;
 } CustomAgg_FH_Struct_Data;
 
 /*
@@ -137,6 +145,11 @@ typedef struct FDSourceBufferState_CA {
     int flatBufIndice;
     ADIO_Offset_CA sourceBufferOffset;
 } FDSourceBufferState_CA;
+
+void calc_file_domains(ADIO_Offset_CA *st_offsets, ADIO_Offset_CA *end_offsets,
+    int nprocs, int nprocs_for_coll, ADIO_Offset_CA *min_st_offset_ptr,
+    ADIO_Offset_CA **fd_start_ptr, ADIO_Offset_CA **fd_end_ptr,
+    ADIO_Offset_CA *fd_size_ptr, ADIO_Offset_CA blksize);
 
 void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, MPI_Offset mpi_off,
     H5S_flatbuf_t *memFlatBuf, H5S_flatbuf_t *fileFlatBuf, int *error_code);
@@ -2932,6 +2945,7 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
     char *do_topo_select = HDgetenv("HDF5_CCIO_TOPO_CB_SELECT");
     char *set_ppn = HDgetenv("HDF5_CCIO_TOPO_PPN");
     char *set_pps = HDgetenv("HDF5_CCIO_TOPO_PPS");
+    char *use_fd_agg = HDgetenv("HDF5_CCIO_FD_AGG");
     int custom_agg_debug = 0;
     int mpi_rank = file->mpi_rank;       /* MPI rank of this process */
     int mpi_size = file->mpi_size;       /* Total number of MPI processes */
@@ -2943,6 +2957,11 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
 
     if (custom_agg_debug_str && (strcmp(custom_agg_debug_str,"yes") == 0))
         custom_agg_debug = 1;
+
+    if (use_fd_agg && (strcmp(use_fd_agg,"yes") == 0))
+        file->custom_agg_data.fslayout = GPFS;
+    else
+        file->custom_agg_data.fslayout = LUSTRE;
 
     /* Set some defaults for the one-sided agg algorithm */
     file->custom_agg_data.ccio_read = 0;
@@ -3231,8 +3250,8 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 
     int i, nprocs, myrank;
     int contig_access_count = 0;
-    ADIO_Offset_CA start_offset, end_offset, off;
-    ADIO_Offset_CA *offset_list = NULL, *st_offsets = NULL, *end_offsets = NULL;
+    ADIO_Offset_CA start_offset, end_offset, fd_size, min_st_offset, off;
+    ADIO_Offset_CA *offset_list = NULL, *st_offsets = NULL, *fd_start = NULL, *fd_end = NULL, *end_offsets = NULL;
     ADIO_Offset_CA *len_list = NULL;
     int *fs_block_info = NULL;
     ADIO_Offset_CA **buf_idx = NULL;
@@ -3329,52 +3348,132 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     }
 #endif
 
-    /* Rewriting the ca_data as 'fs_block_info' (probably NOT necessary) */
-    fs_block_info = (int *) H5MM_malloc(3 * sizeof(int));
-    fs_block_info[0] = ca_data->fs_block_size;
-    fs_block_info[1] = ca_data->fs_block_count;
-    fs_block_info[2] = ca_data->cb_nodes;
-#ifdef onesidedtrace
-    printf("Rank %d - ca_data->cb_buffer_size is %lu fs_block_info[0] is %d fs_block_info[1] is %d fs_block_info[2] is %d\n",myrank,ca_data->cb_buffer_size,fs_block_info[0],fs_block_info[1],fs_block_info[2]);
-    fflush(stdout);
-#endif
+    /* Use GPFS-like mapping of aggregators to file data */
+    if (ca_data->fslayout == GPFS) {
 
-    /* Select Topology-aware list of cb_nodes if desired */
-    if (ca_data->topo_cb_select > 0) {
-        if (ca_data->topo_cb_select == 2)
-            topology_aware_ranklist_spread ( ca_data->cb_nodes, &(ca_data->ranklist[0]), ca_data->ppn, ca_data->pps, ca_data->comm );
-        else
-            topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, ca_data->comm );
-#ifdef onesidedtrace
-        if (myrank == 0) {
-            fprintf(stdout,"Topology-aware CB Selection (type %d): ca_data->cb_nodes is %d, and ranklist is:", ca_data->topo_cb_select, ca_data->cb_nodes);
-            for (i=0;i<ca_data->cb_nodes;i++)
-                fprintf(stdout," %d",ca_data->ranklist[i]);
-            fprintf(stdout,"\n");
+        calc_file_domains(st_offsets, end_offsets,
+          currentValidDataIndex, ca_data->cb_nodes, &min_st_offset, &fd_start,
+          &fd_end, &fd_size, ca_data->fs_block_size);
+
+       /*
+        * Pass this datastructure to indicate we are a non-striping filesystem
+        * (by setting stripe size to 0).
+        * That is, we are NOT using the LUSTRE approach here...
+        */
+
+        FS_Block_Parms noStripeParms;
+        noStripeParms.stripeSize = 0;
+        noStripeParms.segmentLen = 0;
+        noStripeParms.stripesPerAgg = 0;
+        noStripeParms.segmentIter = 0;
+        noStripeParms.flushCB = 1;
+        noStripeParms.stripedLastFileOffset = 0;
+        noStripeParms.firstStripedIOCall = 0;
+        noStripeParms.lastStripedIOCall = 0;
+        noStripeParms.iWasUsedStripingAgg = 0;
+        noStripeParms.numStripesUsed = 0;
+        noStripeParms.amountOfStripedDataExpected = 0;
+        noStripeParms.bufTypeExtent = 0;
+        noStripeParms.lastDataTypeExtent = 0;
+        noStripeParms.lastFlatBufIndice = 0;
+        noStripeParms.lastIndiceOffset = 0;
+        int holeFound = 0;
+
+        H5FD_mpio_ccio_osagg_write(ca_data, offset_list, len_list, contig_access_count,
+        buf, memFlatBuf, error_code, firstFileOffset, lastFileOffset,
+        currentValidDataIndex, fd_start, fd_end, &holeFound, &noStripeParms);
+
+        int anyHolesFound = 0;
+        if (!(ca_data->onesided_no_rmw))
+        MPI_Allreduce(&holeFound, &anyHolesFound, 1, MPI_INT, MPI_MAX, ca_data->comm);
+        if (anyHolesFound == 0) {
+            H5MM_free(offset_list);
+            H5MM_free(len_list);
+            H5MM_free(st_offsets);
+            H5MM_free(end_offsets);
+            H5MM_free(fd_start);
+            H5MM_free(fd_end);
+            H5MM_free(count_sizes);
         }
-        MPI_Barrier(ca_data->comm);
+        else {
+            /* Holes are found in the data and the user has not set
+            * romio_onesided_no_rmw --- set romio_onesided_always_rmw to 1
+            * and re-call ADIOI_OneSidedWriteAggregation and if the user has
+            * romio_onesided_inform_rmw set then inform him of this condition
+            * and behavior.
+            */
+            if (ca_data->onesided_inform_rmw && (myrank ==0)) {
+                fprintf(stderr,"Information: Holes found during one-sided "
+                "write aggregation algorithm --- re-running one-sided "
+                "write aggregation with ROMIO_ONESIDED_ALWAYS_RMW set to 1.\n");
+                ca_data->onesided_always_rmw = 1;
+                int prev_onesided_no_rmw = ca_data->onesided_no_rmw;
+                ca_data->onesided_no_rmw = 1;
+                H5FD_mpio_ccio_osagg_write(ca_data, offset_list, len_list, contig_access_count,
+                buf, memFlatBuf, error_code, firstFileOffset, lastFileOffset,
+                currentValidDataIndex, fd_start, fd_end, &holeFound, &noStripeParms);
+                ca_data->onesided_no_rmw = prev_onesided_no_rmw;
+                H5MM_free(offset_list);
+                H5MM_free(len_list);
+                H5MM_free(st_offsets);
+                H5MM_free(end_offsets);
+                H5MM_free(fd_start);
+                H5MM_free(fd_end);
+                H5MM_free(count_sizes);
+            }
+        }
+
+    }
+    /* Use LUSTRE-like mapping of aggregators to file data */
+    else {
+
+        /* Rewriting the ca_data as 'fs_block_info' (probably NOT necessary) */
+        fs_block_info = (int *) H5MM_malloc(3 * sizeof(int));
+        fs_block_info[0] = ca_data->fs_block_size;
+        fs_block_info[1] = ca_data->fs_block_count;
+        fs_block_info[2] = ca_data->cb_nodes;
+#ifdef onesidedtrace
+        printf("Rank %d - ca_data->cb_buffer_size is %lu fs_block_info[0] is %d fs_block_info[1] is %d fs_block_info[2] is %d\n",myrank,ca_data->cb_buffer_size,fs_block_info[0],fs_block_info[1],fs_block_info[2]);
+        fflush(stdout);
 #endif
+        /* Select Topology-aware list of cb_nodes if desired */
+        if (ca_data->topo_cb_select > 0) {
+            if (ca_data->topo_cb_select == 2)
+                topology_aware_ranklist_spread ( ca_data->cb_nodes, &(ca_data->ranklist[0]), ca_data->ppn, ca_data->pps, ca_data->comm );
+            else
+                topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, ca_data->comm );
+#ifdef onesidedtrace
+            if (myrank == 0) {
+                fprintf(stdout,"Topology-aware CB Selection (type %d): ca_data->cb_nodes is %d, and ranklist is:", ca_data->topo_cb_select, ca_data->cb_nodes);
+                for (i=0;i<ca_data->cb_nodes;i++)
+                    fprintf(stdout," %d",ca_data->ranklist[i]);
+                fprintf(stdout,"\n");
+            }
+            MPI_Barrier(ca_data->comm);
+#endif
+        }
+
+        /* Async I/O - Make sure we are starting with the main buffer */
+        ca_data->use_dup = 0;
+
+        /* Iterate over 1+ aggregation rounds and write to FS when buffers are full */
+        H5FD_mpio_ccio_iterate_write(ca_data, buf, fs_block_info, offset_list, len_list, mpi_off, contig_access_count, currentValidDataIndex, start_offset, end_offset, firstFileOffset, lastFileOffset, memFlatBuf, fileFlatBuf, myrank, error_code);
+
+        /* Async I/O - Wait for any outstanding requests (we are done with this I/O call) */
+        ca_data->use_dup = 0;
+        if (ca_data->check_req == 1) {
+            MPIO_Wait(&ca_data->io_Request, error_code);
+            ca_data->check_req = 0;
+        }
+
+        H5MM_free(offset_list);
+        H5MM_free(len_list);
+        H5MM_free(st_offsets);
+        H5MM_free(end_offsets);
+        H5MM_free(count_sizes);
+        H5MM_free(fs_block_info);
+
     }
-
-    /* Async I/O - Make sure we are starting with the main buffer */
-    ca_data->use_dup = 0;
-
-    /* Iterate over 1+ aggregation rounds and write to FS when buffers are full */
-    H5FD_mpio_ccio_iterate_write(ca_data, buf, fs_block_info, offset_list, len_list, mpi_off, contig_access_count, currentValidDataIndex, start_offset, end_offset, firstFileOffset, lastFileOffset, memFlatBuf, fileFlatBuf, myrank, error_code);
-
-    /* Async I/O - Wait for any outstanding requests (we are done with this I/O call) */
-    ca_data->use_dup = 0;
-    if (ca_data->check_req == 1) {
-        MPIO_Wait(&ca_data->io_Request, error_code);
-        ca_data->check_req = 0;
-    }
-
-    H5MM_free(offset_list);
-    H5MM_free(len_list);
-    H5MM_free(st_offsets);
-    H5MM_free(end_offsets);
-    H5MM_free(count_sizes);
-    H5MM_free(fs_block_info);
 
 } /* H5FD_mpio_ccio_write_one_sided */
 
@@ -6576,6 +6675,149 @@ void H5FD_mpio_ccio_file_read(CustomAgg_FH_Data ca_data, int *error_code,
 
      return;
  } /* H5FD_mpio_ccio_file_read */
+
+/*-------------------------------------------------------------------------
+ * Function:    calc_file_domains
+ *
+ * Purpose:     Compute a dynamic access range based file domain partition
+ *              among I/O aggregators, which align to the GPFS block size
+ *              Divide the I/O workload among aggregation processes. This is
+ *              done by (logically) dividing the file into file domains (FDs); each
+ *              process may directly access only its own file domain.
+ *              Additional effort is to make sure that each I/O aggregator gets
+ *              a file domain that aligns to the GPFS block size.  So, there will
+ *              not be any false sharing of GPFS file blocks among multiple I/O nodes.
+ *
+ * Return:      Void.
+ *
+ *-------------------------------------------------------------------------
+ */
+void calc_file_domains(ADIO_Offset_CA *st_offsets, ADIO_Offset_CA *end_offsets,
+    int nprocs, int nprocs_for_coll, ADIO_Offset_CA *min_st_offset_ptr,
+    ADIO_Offset_CA **fd_start_ptr, ADIO_Offset_CA **fd_end_ptr,
+    ADIO_Offset_CA *fd_size_ptr, ADIO_Offset_CA blksize)
+{
+    ADIO_Offset_CA min_st_offset, max_end_offset, *fd_start, *fd_end, *fd_size;
+    int i, aggr;
+
+#ifdef onesidedtrace
+    printf("calc_file_domains: Blocksize=%ld\n",blksize);
+#endif
+    /* find min of start offsets and max of end offsets of all processes */
+    min_st_offset  = st_offsets [0];
+    max_end_offset = end_offsets[0];
+    for (i=1; i<nprocs; i++) {
+        min_st_offset = MIN(min_st_offset, st_offsets[i]);
+        max_end_offset = MAX(max_end_offset, end_offsets[i]);
+    }
+
+#ifdef onesidedtrace
+    printf("calc_file_domains, min_st_offset, max_end_offset = %qd, %qd\n", min_st_offset, max_end_offset );
+#endif
+
+    /* determine the "file domain (FD)" of each process, i.e., the portion of
+    the file that will be "owned" by each process */
+
+    ADIO_Offset_CA gpfs_ub       = (max_end_offset +blksize-1) / blksize * blksize - 1;
+    ADIO_Offset_CA gpfs_lb       = min_st_offset / blksize * blksize;
+    ADIO_Offset_CA gpfs_ub_rdoff = (max_end_offset +blksize-1) / blksize * blksize - 1 - max_end_offset;
+    ADIO_Offset_CA gpfs_lb_rdoff = min_st_offset - min_st_offset / blksize * blksize;
+    ADIO_Offset_CA fd_gpfs_range = gpfs_ub - gpfs_lb + 1;
+
+    int         naggs    = nprocs_for_coll;
+
+    /* Tweak the file domains so that no fd is smaller than a threshold.  We
+    * have to strike a balance between efficency and parallelism: somewhere
+    * between 10k processes sending 32-byte requests and one process sending a
+    * 320k request is a (system-dependent) sweet spot
+
+    This is from the common code - the new min_fd_size parm that we didn't implement.
+    (And common code uses a different declaration of fd_size so beware)
+
+    if (fd_size < min_fd_size)
+    fd_size = min_fd_size;
+    */
+    fd_size        = (ADIO_Offset_CA *) H5MM_malloc(nprocs_for_coll * sizeof(ADIO_Offset_CA));
+    *fd_start_ptr  = (ADIO_Offset_CA *) H5MM_malloc(nprocs_for_coll * sizeof(ADIO_Offset_CA));
+    *fd_end_ptr    = (ADIO_Offset_CA *) H5MM_malloc(nprocs_for_coll * sizeof(ADIO_Offset_CA));
+    fd_start       = *fd_start_ptr;
+    fd_end         = *fd_end_ptr;
+
+    /* each process will have a file domain of some number of gpfs blocks, but
+     * the division of blocks is not likely to be even.  Some file domains will
+     * be "large" and others "small"
+     *
+     * Example: consider  17 blocks distributed over 3 aggregators.
+     * nb_cn_small = 17/3 = 5
+     * naggs_large = 17 - 3*(17/3) = 17 - 15  = 2
+     * naggs_small = 3 - 2 = 1
+     *
+     * and you end up with file domains of {5-blocks, 6-blocks, 6-blocks}
+     *
+     * what about (relatively) small files?  say, a file of 1000 blocks
+     * distributed over 2064 aggregators:
+     * nb_cn_small = 1000/2064 = 0
+     * naggs_large = 1000 - 2064*(1000/2064) = 1000
+     * naggs_small = 2064 - 1000 = 1064
+     * and you end up with domains of {0, 0, 0, ... 1, 1, 1 ...}
+     *
+     * it might be a good idea instead of having all the zeros up front, to
+     * "mix" those zeros into the fd_size array.  that way, no pset/bridge-set
+     * is left with zero work.  In fact, even if the small file domains aren't
+     * zero, it's probably still a good idea to mix the "small" file domains
+     * across the fd_size array to keep the io nodes in balance
+     */
+
+    ADIO_Offset_CA n_gpfs_blk  = fd_gpfs_range / blksize;
+    ADIO_Offset_CA nb_cn_small = n_gpfs_blk/naggs;
+    ADIO_Offset_CA naggs_large = n_gpfs_blk - naggs * (n_gpfs_blk/naggs);
+    ADIO_Offset_CA naggs_small = naggs - naggs_large;
+
+    /* simple allocation of file domins to each aggregator */
+    for (i=0; i<naggs; i++) {
+        if (i < naggs_large) {
+            fd_size[i] = (nb_cn_small+1) * blksize;
+        } else {
+            fd_size[i] = nb_cn_small * blksize;
+        }
+    }
+
+#ifdef onesidedtrace
+    printf("gpfs_ub       %llu, gpfs_lb       %llu, gpfs_ub_rdoff %llu, gpfs_lb_rdoff %llu, fd_gpfs_range %llu, n_gpfs_blk    %llu, nb_cn_small   %llu, naggs_large   %llu, naggs_small   %llu\n",
+    gpfs_ub      ,
+    gpfs_lb      ,
+    gpfs_ub_rdoff,
+    gpfs_lb_rdoff,
+    fd_gpfs_range,
+    n_gpfs_blk   ,
+    nb_cn_small  ,
+    naggs_large  ,
+    naggs_small
+    );
+    printf("File domains:\n");
+    fflush(stdout);
+#endif
+
+    fd_size[0]       -= gpfs_lb_rdoff;
+    fd_size[naggs-1] -= gpfs_ub_rdoff;
+
+    /* compute the file domain for each aggr */
+    ADIO_Offset_CA offset = min_st_offset;
+    for (aggr=0; aggr<naggs; aggr++) {
+        fd_start[aggr] = offset;
+        fd_end  [aggr] = offset + fd_size[aggr] - 1;
+        offset += fd_size[aggr];
+#ifdef onesidedtrace
+        printf("fd[%d]: start %ld end %ld\n",aggr,fd_start[aggr],fd_end[aggr]);
+        fflush(stdout);
+#endif
+    }
+
+    *fd_size_ptr = fd_size[0];
+    *min_st_offset_ptr = min_st_offset;
+
+    H5MM_free (fd_size);
+}
 
 
 #endif /* H5_HAVE_PARALLEL */
