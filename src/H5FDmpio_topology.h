@@ -751,34 +751,46 @@ int get_ranklist_strided ( int64_t nb_aggr, int* agg_list, int stride, MPI_Comm 
  */
 int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len,
     int *ranklist, int64_t buffer_size, int64_t nb_aggr, int ppn, int pps,
-    int stride, MPI_Comm comm, AGGSelect select_type, int fd_mapping )
+    int stride, MPI_Comm comm, enum AGGSelect select_type, int fd_mapping )
 {
     int r;
     switch(select_type) {
 
         case DATA :
-
+        {
             /* Tally data quantities associated with each aggregator */
             int64_t *data_to_send_per_aggr;
             data_to_send_per_aggr = (int64_t *) calloc (nb_aggr, sizeof (int64_t));
 
-            if (fd_mapping==0) {
+            if (fd_mapping==0) { /* GPFS-style mapping */
 
                 /* get local min and max offsets */
-                int64_t min_off, max_off, off;
+                int64_t min_off, max_off, min_off_l, max_off_l, off;
+                int64_t st_agg, in_0, in_1;
                 min_off = offsets[0]; max_off = offsets[0] + data_lens[0];
-                for ( r = 1; r < data_len; r++ ) {
+                for ( r = 0; r < data_len; r++ ) {
                   if (offsets[r] < min_off) min_off = offsets[r];
                   off = offsets[r] + data_lens[r];
                   if (off > max_off) max_off = off;
                 }
+                min_off_l = min_off;
+                max_off_l = max_off;
 
                 /* Use allreduce to get global min and max offsets */
+                MPI_Allreduce ( &min_off, &min_off_l, 1, MPI_DOUBLE_INT, MPI_MIN, comm );
+                MPI_Allreduce ( &max_off, &max_off_l, 1, MPI_DOUBLE_INT, MPI_MAX, comm );
 
+                /* Loop through data to add counts to known file domains */
+                int64_t fd_size = (max_off - min_off) / nb_aggr;
+                for ( r = 0; r < data_len; r++ ) {
+                    st_agg = (offsets[r]-min_off) / fd_size;
+                    in_0   = (offsets[r]-min_off) % fd_size;
+                    in_1   = data_lens[r] - in_0;
+                    data_to_send_per_aggr[ (int) st_agg ] += in_0;
+                    data_to_send_per_aggr[ (int) ((st_agg+1)%nb_aggr) ] += in_1;
+                }
 
-                /* Loop through data to add chunks to known file domains */
-
-            } else {
+            } else { /* LUSTRE-style mapping */
                 for ( r = 0; r < data_len; r++ ) {
                     add_chunk ( data_lens[r], offsets[r], buffer_size, nb_aggr, data_to_send_per_aggr );
                 }
@@ -787,30 +799,30 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
             /* Generate topology-aware list of aggregators */
             topology_aware_list_serial( data_to_send_per_aggr, nb_aggr, ranklist, ppn, pps, comm );
             break;
-
+        }
         case SPREAD :
-
+        {
             /* Generate spread-out list of aggregators */
             get_ranklist_spread ( nb_aggr, ranklist, ppn, pps, comm );
             break;
-
+        }
         case STRIDED :
-
+        {
             /* Generate constant-strided list of aggregators */
             get_ranklist_strided ( nb_aggr, ranklist, stride, comm );
             break;
-
+        }
         case RANDOM :
-
+        {
             /* Generate random list of aggregators */
             get_ranklist_random ( nb_aggr, ranklist, comm );
             break;
-
+        }
         default :
-
-        /* Generate random list of aggregators */
-        get_ranklist_strided ( nb_aggr, ranklist, 0 );
-
+        {
+            /* Generate random list of aggregators */
+            get_ranklist_strided ( nb_aggr, ranklist, 0, comm );
+        }
     }
 
     return 0;

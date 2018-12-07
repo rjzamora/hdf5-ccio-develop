@@ -35,7 +35,7 @@
 #include "H5FDmpio_topology.h"  /* Topology API                         */
 #include <pthread.h>
 
-#define onesidedtrace
+//#define onesidedtrace
 #ifdef H5_HAVE_PARALLEL
 #ifdef BGQ
 #define inline
@@ -88,7 +88,7 @@ typedef struct CustomAgg_FH_Struct_Data {
     int cb_nodes;
     int ppn; /* Only used in topology-aware cb selection if env var is set */
     int pps; /* Only used in topology-aware cb selection if env var is set */
-    AGGSelect topo_cb_select;
+    enum AGGSelect topo_cb_select;
     int cb_buffer_size;
     int fs_block_count;
     int fs_block_size;
@@ -3481,7 +3481,7 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
         /* Select Topology-aware list of cb_nodes if desired */
         if (ca_data->topo_cb_select != DEFAULT) {
 
-            topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(file->custom_agg_data.fslayout == GPFS) );
+            topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
 
 #ifdef onesidedtrace
             if (myrank == 0) {
@@ -3643,7 +3643,7 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
         /* Select Topology-aware list of cb_nodes if desired */
         if (ca_data->topo_cb_select != DEFAULT) {
 
-            topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(file->custom_agg_data.fslayout == GPFS) );
+            topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
 
 #ifdef onesidedtrace
             if (myrank == 0) {
