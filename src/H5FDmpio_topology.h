@@ -66,6 +66,15 @@ struct cost {
     int rank;
 };
 
+/*
+ * AGGSelect is used to select the desired aggregation selection routine
+ * DATA    -> Try to maximize data-movement bandwidth
+ * SPREAD  -> Spread out aggregators using topology information
+ * STRIDED -> Spread out aggregators according a given stride (using the rank IDs)
+ * RANDOM  -> Use random rank selection for aggregator placement
+ */
+enum AGGSelect{DEFAULT, DATA, SPREAD, STRIDED, RANDOM};
+
 /*-------------------------------------------------------------------------
  * Function:    CountProcsPerNode
  *
@@ -393,70 +402,6 @@ int distance_to_io_node ( int src_rank ) {
 }
 
 /*-------------------------------------------------------------------------
- * Function:    topology_aware_ranklist_spread
- *
- * Purpose:     Just start with a simple rank-based spacing between aggs, then
- *              try to increase actual minimum distance between any two aggs.
- *
- * Return:      0 == Success. Populates int* agg_list
- *
- *-------------------------------------------------------------------------
- */
-int topology_aware_ranklist_spread ( int64_t nb_aggr, int* agg_list, int ppn, int pps, MPI_Comm comm )
-{
-    int i, r, agg_ind, distance, nprocs, rank, stride;
-    cost aggr_cost, max_cost;
-
-    MPI_Comm_rank ( comm, &rank );
-    MPI_Comm_size ( comm, &nprocs );
-
-    /* Start with a simple aggregator placement */
-    stride = nprocs / nb_aggr;
-    for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
-        agg_list[ agg_ind ] = agg_ind * stride;
-    }
-
-    /*
-     * Loop through the aggs and adjust each one to MAXIMUIZE the
-     * minimum distance to another aggregator...
-     */
-    for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
-
-        aggr_cost.cost  = -1;
-        aggr_cost.rank  = rank;
-        max_cost.cost  = 0.0;
-        max_cost.rank  = 0;
-        //if ((rank == 0)) printf("starting with agg_rank = %d for agg_ind = %d.\n", agg_list[ agg_ind ], agg_ind);
-
-        /* Compute the "cost" (min distance) to other aggs */
-        for (r = 0; r < nb_aggr; r++ ) {
-            if (r != agg_ind) {
-                if (aggr_cost.rank == agg_list[ r ]) {
-                    aggr_cost.cost = 0;
-                    //printf("agg_ind = %d, rank %d cannot be chosen because its agg_ind %d already.\n", agg_ind, rank , r);
-                    break;
-                }
-                distance = distance_between_ranks ( aggr_cost.rank, agg_list[ r ], ppn, pps );
-                //printf("agg_ind = %d, rank %d is distance=%d from agg %d.\n", agg_ind, aggr_cost.rank, distance, r);
-                if (aggr_cost.cost < 0)
-                    aggr_cost.cost = distance;
-                else
-                    aggr_cost.cost = TMIN( distance, aggr_cost.cost );
-            }
-        }
-        if (aggr_cost.rank == agg_list[ agg_ind ]) aggr_cost.cost++; // Don't change agg if we are already good...
-
-        /* Determine the aggr with MAXIMUM cost (we want to maximize min distance) */
-        MPI_Allreduce ( &aggr_cost, &max_cost, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm );
-        agg_list[ agg_ind ] = max_cost.rank;
-        //printf("agg_ind = %d aggr_cost.rank = %d aggr_cost.cost = %f, max_cost.rank = %d, max_cost.cost = %f \n", agg_ind, aggr_cost.rank, aggr_cost.cost, max_cost.rank, max_cost.cost);
-
-    }
-
-    return 0;
-}
-
-/*-------------------------------------------------------------------------
  * Function:    topology_aware_list_serial
  *
  * Purpose:     Given a `tally` array (of bytes needed to/from each of nb_aggr
@@ -659,35 +604,214 @@ int get_cb_config_list ( int64_t* data_lens, int64_t* offsets, int data_len, cha
     return 0;
 }
 
+
+/*-------------------------------------------------------------------------
+ * Function:    get_ranklist_spread
+ *
+ * Purpose:     Just start with a simple rank-based spacing between aggs, then
+ *              try to increase actual minimum distance between any two aggs.
+ *
+ * Return:      0 == Success. Populates int* agg_list
+ *
+ *-------------------------------------------------------------------------
+ */
+int get_ranklist_spread ( int64_t nb_aggr, int* agg_list, int ppn, int pps, MPI_Comm comm )
+{
+    int i, r, agg_ind, distance, nprocs, rank, stride;
+    cost aggr_cost, max_cost;
+
+    MPI_Comm_rank ( comm, &rank );
+    MPI_Comm_size ( comm, &nprocs );
+
+    /* Start with a simple aggregator placement */
+    stride = nprocs / nb_aggr;
+    for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
+        agg_list[ agg_ind ] = agg_ind * stride;
+    }
+
+    /*
+     * Loop through the aggs and adjust each one to MAXIMUIZE the
+     * minimum distance to another aggregator...
+     */
+    for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
+
+        aggr_cost.cost  = -1;
+        aggr_cost.rank  = rank;
+        max_cost.cost  = 0.0;
+        max_cost.rank  = 0;
+        //if ((rank == 0)) printf("starting with agg_rank = %d for agg_ind = %d.\n", agg_list[ agg_ind ], agg_ind);
+
+        /* Compute the "cost" (min distance) to other aggs */
+        for (r = 0; r < nb_aggr; r++ ) {
+            if (r != agg_ind) {
+                if (aggr_cost.rank == agg_list[ r ]) {
+                    aggr_cost.cost = 0;
+                    //printf("agg_ind = %d, rank %d cannot be chosen because its agg_ind %d already.\n", agg_ind, rank , r);
+                    break;
+                }
+                distance = distance_between_ranks ( aggr_cost.rank, agg_list[ r ], ppn, pps );
+                //printf("agg_ind = %d, rank %d is distance=%d from agg %d.\n", agg_ind, aggr_cost.rank, distance, r);
+                if (aggr_cost.cost < 0)
+                    aggr_cost.cost = distance;
+                else
+                    aggr_cost.cost = TMIN( distance, aggr_cost.cost );
+            }
+        }
+        if (aggr_cost.rank == agg_list[ agg_ind ]) aggr_cost.cost++; // Don't change agg if we are already good...
+
+        /* Determine the aggr with MAXIMUM cost (we want to maximize min distance) */
+        MPI_Allreduce ( &aggr_cost, &max_cost, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm );
+        agg_list[ agg_ind ] = max_cost.rank;
+        //printf("agg_ind = %d aggr_cost.rank = %d aggr_cost.cost = %f, max_cost.rank = %d, max_cost.cost = %f \n", agg_ind, aggr_cost.rank, aggr_cost.cost, max_cost.rank, max_cost.cost);
+
+    }
+
+    return 0;
+}
+
+/*-------------------------------------------------------------------------
+ * Function:    get_ranklist_random
+ *
+ * Purpose:     Just return a random selection of ranks
+ *
+ * Return:      0 == Success. Populates int* agg_list
+ *
+ *-------------------------------------------------------------------------
+ */
+int get_ranklist_random ( int64_t nb_aggr, int* agg_list, MPI_Comm comm )
+{
+    int r, agg_ind, rank;
+    MPI_Comm_rank ( comm, &rank );
+
+    /* Use rank-0 to crate a random agg placement */
+    if (rank == 0) {
+        srand(time(NULL));   /* Initialization, should only be called once. */
+        for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
+            r = rand() % nb_aggr;
+            agg_list[ agg_ind ] = r;
+        }
+    }
+    /* Bcast random list to other ranks */
+    MPI_Bcast(&agg_list[0], nb_aggr, MPI_INT, 0, comm);
+
+    return 0;
+}
+
+/*-------------------------------------------------------------------------
+ * Function:    get_ranklist_strided
+ *
+ * Purpose:     Just return a strided selection of ranks
+ *
+ * Return:      0 == Success. Populates int* agg_list
+ *
+ *-------------------------------------------------------------------------
+ */
+int get_ranklist_strided ( int64_t nb_aggr, int* agg_list, int stride, MPI_Comm comm )
+{
+    int agg_ind, nprocs;
+    MPI_Comm_size ( comm, &nprocs );
+
+    if (stride < 1) stride = nprocs / nb_aggr;
+
+    /* Use rank-0 to crate a random agg placement */
+    for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
+        agg_list[ agg_ind ] = agg_ind * stride;
+    }
+
+    return 0;
+}
+
 /*-------------------------------------------------------------------------
  * Function:    topology_aware_ranklist
  *
- * Purpose:     Given a data patern to read or write, generate an optimal list
- *              of aggregator ranks.
+ * Purpose:     Given a data patern to read or write, generate an optimal
+ *              list of aggregator ranks.  Actual routine depends on the
+ *              'AGGSelect select_type' argument...
  *
- * Return:      0 == Success. Populates int *ranklist
+ *    DATA    -> Try to maximize data-movement bandwidth
+ *    SPREAD  -> Spread out aggregators using topology information
+ *    STRIDED -> Spread out aggregators according a given stride (using the rank IDs)
+ *    RANDOM  -> Use random rank selection for aggregator placement
  *
- * Assumption:
+ *
+ *   fd_mapping == 0 Assumption:
  *    ---------------------------------------------------------------
  *   | agg 1 round 1 | agg 2 round 1 | agg 1 round 2 | agg 2 round 2 |
  *    ---------------------------------------------------------------
  *
+ *   fd_mapping == 1 Assumption (Use contiguous file domains for each agg):
+ *    ---------------------------------------------------------------
+ *   | agg 1 round 1 | agg 1 round 2 | agg 2 round 1 | agg 2 round 2 |
+ *    ---------------------------------------------------------------
+ *
+ *
+ * Return:      0 == Success. Populates int *ranklist
+ *
  *-------------------------------------------------------------------------
  */
 int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len,
-    int *ranklist, int64_t buffer_size, int64_t nb_aggr, int ppn, int pps, MPI_Comm comm )
+    int *ranklist, int64_t buffer_size, int64_t nb_aggr, int ppn, int pps,
+    int stride, MPI_Comm comm, AGGSelect select_type, int fd_mapping )
 {
     int r;
-    int64_t *data_to_send_per_aggr;
+    switch(select_type) {
 
-    /* Tally data quantities associated with each aggregator */
-    data_to_send_per_aggr = (int64_t *) calloc (nb_aggr, sizeof (int64_t));
-    for ( r = 0; r < data_len; r++ ) {
-        add_chunk ( data_lens[r], offsets[r], buffer_size, nb_aggr, data_to_send_per_aggr );
+        case DATA :
+
+            /* Tally data quantities associated with each aggregator */
+            int64_t *data_to_send_per_aggr;
+            data_to_send_per_aggr = (int64_t *) calloc (nb_aggr, sizeof (int64_t));
+
+            if (fd_mapping==0) {
+
+                /* get local min and max offsets */
+                int64_t min_off, max_off, off;
+                min_off = offsets[0]; max_off = offsets[0] + data_lens[0];
+                for ( r = 1; r < data_len; r++ ) {
+                  if (offsets[r] < min_off) min_off = offsets[r];
+                  off = offsets[r] + data_lens[r];
+                  if (off > max_off) max_off = off;
+                }
+
+                /* Use allreduce to get global min and max offsets */
+
+
+                /* Loop through data to add chunks to known file domains */
+
+            } else {
+                for ( r = 0; r < data_len; r++ ) {
+                    add_chunk ( data_lens[r], offsets[r], buffer_size, nb_aggr, data_to_send_per_aggr );
+                }
+            }
+
+            /* Generate topology-aware list of aggregators */
+            topology_aware_list_serial( data_to_send_per_aggr, nb_aggr, ranklist, ppn, pps, comm );
+            break;
+
+        case SPREAD :
+
+            /* Generate spread-out list of aggregators */
+            get_ranklist_spread ( nb_aggr, ranklist, ppn, pps, comm );
+            break;
+
+        case STRIDED :
+
+            /* Generate constant-strided list of aggregators */
+            get_ranklist_strided ( nb_aggr, ranklist, stride, comm );
+            break;
+
+        case RANDOM :
+
+            /* Generate random list of aggregators */
+            get_ranklist_random ( nb_aggr, ranklist, comm );
+            break;
+
+        default :
+
+        /* Generate random list of aggregators */
+        get_ranklist_strided ( nb_aggr, ranklist, 0 );
+
     }
-
-    /* Generate topology-aware list of aggregators */
-    topology_aware_list_serial( data_to_send_per_aggr, nb_aggr, ranklist, ppn, pps, comm );
 
     return 0;
 }
