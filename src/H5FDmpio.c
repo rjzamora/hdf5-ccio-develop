@@ -3392,6 +3392,25 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     }
 #endif
 
+    /* Select Topology-aware list of cb_nodes if desired */
+    if ((ca_data->topo_cb_select != DEFAULT) && (ca_data->ranklist_populated==0)) {
+
+        topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
+
+        /* Only populating ranklist when necessary */
+        ca_data->ranklist_populated = 1;
+
+#ifdef onesidedtrace
+        if (myrank == 0) {
+            fprintf(stdout,"Topology-aware CB Selection (type %d): ca_data->cb_nodes is %d, and ranklist is:", ca_data->topo_cb_select, ca_data->cb_nodes);
+            for (i=0;i<ca_data->cb_nodes;i++)
+                fprintf(stdout," %d",ca_data->ranklist[i]);
+            fprintf(stdout,"\n");
+        }
+        MPI_Barrier(ca_data->comm);
+#endif
+    }
+
     /* Use GPFS-like mapping of aggregators to file data */
     if (ca_data->fslayout == GPFS) {
 
@@ -3480,24 +3499,6 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
         printf("Rank %d - ca_data->cb_buffer_size is %lu fs_block_info[0] is %d fs_block_info[1] is %d fs_block_info[2] is %d\n",myrank,ca_data->cb_buffer_size,fs_block_info[0],fs_block_info[1],fs_block_info[2]);
         fflush(stdout);
 #endif
-        /* Select Topology-aware list of cb_nodes if desired */
-        if (ca_data->topo_cb_select != DEFAULT && (ca_data->ranklist_populated==0)) {
-
-            topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
-
-            /* Only populating ranklist when necessary */
-            ca_data->ranklist_populated = 1;
-
-#ifdef onesidedtrace
-            if (myrank == 0) {
-                fprintf(stdout,"Topology-aware CB Selection (type %d): ca_data->cb_nodes is %d, and ranklist is:", ca_data->topo_cb_select, ca_data->cb_nodes);
-                for (i=0;i<ca_data->cb_nodes;i++)
-                    fprintf(stdout," %d",ca_data->ranklist[i]);
-                fprintf(stdout,"\n");
-            }
-            MPI_Barrier(ca_data->comm);
-#endif
-        }
 
         /* Async I/O - Make sure we are starting with the main buffer */
         ca_data->use_dup = 0;
@@ -3632,6 +3633,25 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
         }
     }
 
+    /* Select Topology-aware list of cb_nodes if desired */
+    if ((ca_data->topo_cb_select != DEFAULT) && (ca_data->ranklist_populated==0)) {
+
+        topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
+
+        /* Only populating ranklist when necessary */
+        ca_data->ranklist_populated = 1;
+
+#ifdef onesidedtrace
+        if (myrank == 0) {
+            fprintf(stdout,"Topology-aware CB Selection: ca_data->cb_nodes is %d, and ranklist is:", ca_data->cb_nodes);
+            for (i=0;i<ca_data->cb_nodes;i++)
+                fprintf(stdout," %d",ca_data->ranklist[i]);
+            fprintf(stdout,"\n");
+        }
+        MPI_Barrier(ca_data->comm);
+#endif
+    }
+
     /* Use LUSTRE-style data mapping to aggs */
     if (ca_data->fslayout == LUSTRE) {
 
@@ -3644,25 +3664,6 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
         printf("Rank %d - ca_data->cb_buffer_size is %lu fs_block_info[0] is %d fs_block_info[1] is %d fs_block_info[2] is %d\n",myrank,ca_data->cb_buffer_size,fs_block_info[0],fs_block_info[1],fs_block_info[2]);
         fflush(stdout);
 #endif
-
-        /* Select Topology-aware list of cb_nodes if desired */
-        if (ca_data->topo_cb_select != DEFAULT && (ca_data->ranklist_populated==0)) {
-
-            topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
-
-            /* Only populating ranklist when necessary */
-            ca_data->ranklist_populated = 1;
-
-#ifdef onesidedtrace
-            if (myrank == 0) {
-                fprintf(stdout,"Topology-aware CB Selection: ca_data->cb_nodes is %d, and ranklist is:", ca_data->cb_nodes);
-                for (i=0;i<ca_data->cb_nodes;i++)
-                    fprintf(stdout," %d",ca_data->ranklist[i]);
-                fprintf(stdout,"\n");
-            }
-            MPI_Barrier(ca_data->comm);
-#endif
-        }
 
         /* Async I/O - Make sure we are starting with the main buffer */
         if (ca_data->check_req == 1) {

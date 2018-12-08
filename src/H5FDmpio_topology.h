@@ -834,16 +834,18 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
             get_ranklist_strided ( nb_aggr, ranklist, 0, comm );
         }
 
-        MPI_Comm_rank ( comm, &myrank );
-        if (myrank == 0) {
-            fprintf(stdout,"Topology-aware CB Selection (type %d): nb_aggr is %d, and ranklist is:", select_type, nb_aggr);
-            for (r=0;r<nb_aggr;r++)
-                fprintf(stdout," %d", ranklist[r]);
-            fprintf(stdout,"\n");
-        }
-        MPI_Barrier(comm);
-
     }
+    
+    /*
+    MPI_Comm_rank ( comm, &myrank );
+    if (myrank == 0) {
+        printf("Topology-aware CB Selection (type %d): nb_aggr is %d, and ranklist is:", select_type, nb_aggr);
+        for (r=0;r<nb_aggr;r++)
+            printf(" %d", ranklist[r]);
+        printf("\n");
+    }
+    MPI_Barrier(comm);
+    */
 
     return 0;
 }
