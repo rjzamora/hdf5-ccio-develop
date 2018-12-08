@@ -98,6 +98,7 @@ typedef struct CustomAgg_FH_Struct_Data {
     int onesided_write_aggmethod;
     int onesided_read_aggmethod;
     int *ranklist;
+    int ranklist_populated;
     /* ------- Added for Async IO ------- */
     int async_io_outer; /* Assume H5FD_mpio_ccio_osagg_write calls will only require 1 "inner" round */
     int async_io_inner; /* Assume File-domain aggregation mapping */
@@ -3000,6 +3001,7 @@ static herr_t H5FD_mpio_ccio_setup(const char *name, H5FD_mpio_t *file, MPI_File
     file->custom_agg_data.onesided_write_aggmethod = 1;
     file->custom_agg_data.onesided_read_aggmethod = 1;
     file->custom_agg_data.topo_cb_select = DEFAULT;
+    file->custom_agg_data.ranklist_populated = 0;
 
     if (do_custom_agg_wr && (strcmp(do_custom_agg_wr,"yes") == 0)) {
         file->custom_agg_data.ccio_write = 1;
@@ -3479,9 +3481,12 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
         fflush(stdout);
 #endif
         /* Select Topology-aware list of cb_nodes if desired */
-        if (ca_data->topo_cb_select != DEFAULT) {
+        if (ca_data->topo_cb_select != DEFAULT && (ca_data->ranklist_populated==0)) {
 
             topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
+
+            /* Only populating ranklist when necessary */
+            ca_data->ranklist_populated = 1;
 
 #ifdef onesidedtrace
             if (myrank == 0) {
@@ -3641,9 +3646,12 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 #endif
 
         /* Select Topology-aware list of cb_nodes if desired */
-        if (ca_data->topo_cb_select != DEFAULT) {
+        if (ca_data->topo_cb_select != DEFAULT && (ca_data->ranklist_populated==0)) {
 
             topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
+
+            /* Only populating ranklist when necessary */
+            ca_data->ranklist_populated = 1;
 
 #ifdef onesidedtrace
             if (myrank == 0) {

@@ -680,14 +680,24 @@ int get_ranklist_spread ( int64_t nb_aggr, int* agg_list, int ppn, int pps, MPI_
  */
 int get_ranklist_random ( int64_t nb_aggr, int* agg_list, MPI_Comm comm )
 {
-    int r, agg_ind, rank;
+    int i, r, good, agg_ind, rank;
     MPI_Comm_rank ( comm, &rank );
 
     /* Use rank-0 to crate a random agg placement */
     if (rank == 0) {
         srand(time(NULL));   /* Initialization, should only be called once. */
         for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
-            r = rand() % nb_aggr;
+            while (1) {
+                good = 1;
+                r = rand() % nb_aggr;
+                for (i=0; i<agg_ind; i++) {
+                    if ((r == agg_list[i]) || (r < 0) || (r > (nb_aggr-1))) {
+                        good = 0;
+                        break;
+                    }
+                }
+                if (good == 1) break;
+            }
             agg_list[ agg_ind ] = r;
         }
     }
@@ -753,7 +763,7 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
     int *ranklist, int64_t buffer_size, int64_t nb_aggr, int ppn, int pps,
     int stride, MPI_Comm comm, enum AGGSelect select_type, int fd_mapping )
 {
-    int r;
+    int r, myrank;
     switch(select_type) {
 
         case DATA :
@@ -823,6 +833,16 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
             /* Generate random list of aggregators */
             get_ranklist_strided ( nb_aggr, ranklist, 0, comm );
         }
+
+        MPI_Comm_rank ( comm, &myrank );
+        if (myrank == 0) {
+            fprintf(stdout,"Topology-aware CB Selection (type %d): nb_aggr is %d, and ranklist is:", select_type, nb_aggr);
+            for (r=0;r<nb_aggr;r++)
+                fprintf(stdout," %d", ranklist[r]);
+            fprintf(stdout,"\n");
+        }
+        MPI_Barrier(comm);
+
     }
 
     return 0;
