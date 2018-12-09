@@ -835,7 +835,7 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
         }
 
     }
-    
+
     /*
     MPI_Comm_rank ( comm, &myrank );
     if (myrank == 0) {
@@ -846,6 +846,7 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
     }
     MPI_Barrier(comm);
     */
+
 
     return 0;
 }

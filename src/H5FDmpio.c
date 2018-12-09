@@ -35,6 +35,7 @@
 #include "H5FDmpio_topology.h"  /* Topology API                         */
 #include <pthread.h>
 
+#define topo_timing
 //#define onesidedtrace
 #ifdef H5_HAVE_PARALLEL
 #ifdef BGQ
@@ -3305,6 +3306,14 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     MPI_Comm_size(ca_data->comm, &nprocs);
     MPI_Comm_rank(ca_data->comm, &myrank);
 
+#ifdef topo_timing
+    double endTimeTopo = 0.0;
+    double startTimeTopo = 0.0;
+    double endTime = 0.0;
+    double startTime = 0.0;
+    startTime = MPI_Wtime();
+#endif
+
 #ifdef onesidedtrace
     printf("Rank %d - H5FD_mpio_ccio_write_one_sided - ca_data->cb_nodes is %d\n",myrank,ca_data->cb_nodes);
     fflush(stdout);
@@ -3394,6 +3403,9 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 
     /* Select Topology-aware list of cb_nodes if desired */
     if ((ca_data->topo_cb_select != DEFAULT) && (ca_data->ranklist_populated==0)) {
+#ifdef topo_timing
+        startTimeTopo = MPI_Wtime();
+#endif
 
         topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
 
@@ -3408,6 +3420,10 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
             fprintf(stdout,"\n");
         }
         MPI_Barrier(ca_data->comm);
+#endif
+
+#ifdef topo_timing
+        endTimeTopo = MPI_Wtime();
 #endif
     }
 
@@ -3522,6 +3538,18 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 
     }
 
+#ifdef topo_timing
+    endTime = MPI_Wtime();
+    double max_frac;
+    double l_frac = (endTimeTopo - startTimeTopo)/(endTime - startTime);
+    MPI_Allreduce ( &max_frac, &l_frac, 1, MPI_DOUBLE, MPI_MAX, ca_data->comm );
+    if (myrank == 0) {
+        printf("WRITE: Aggregator Selection Fraction = %f\n", max_frac);
+        fflush(stdout);
+    }
+    MPI_Barrier(ca_data->comm);
+#endif
+
 } /* H5FD_mpio_ccio_write_one_sided */
 
 /*-------------------------------------------------------------------------
@@ -3553,6 +3581,14 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 
     MPI_Comm_size(ca_data->comm, &nprocs);
     MPI_Comm_rank(ca_data->comm, &myrank);
+
+#ifdef topo_timing
+    double endTimeTopo = 0.0;
+    double startTimeTopo = 0.0;
+    double endTime = 0.0;
+    double startTime = 0.0;
+    startTime = MPI_Wtime();
+#endif
 
 #ifdef onesidedtrace
     printf("Rank %d - H5FD_mpio_ccio_read_one_sided - ca_data->cb_nodes is %d\n",myrank,ca_data->cb_nodes);
@@ -3635,6 +3671,9 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 
     /* Select Topology-aware list of cb_nodes if desired */
     if ((ca_data->topo_cb_select != DEFAULT) && (ca_data->ranklist_populated==0)) {
+#ifdef topo_timing
+    startTimeTopo = MPI_Wtime();
+#endif
 
         topology_aware_ranklist ( fileFlatBuf->blocklens, fileFlatBuf->indices, fileFlatBuf->count, &(ca_data->ranklist[0]), ca_data->cb_buffer_size, ca_data->cb_nodes, ca_data->ppn, ca_data->pps, 0, ca_data->comm, ca_data->topo_cb_select, (int)(ca_data->fslayout == GPFS) );
 
@@ -3649,6 +3688,10 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
             fprintf(stdout,"\n");
         }
         MPI_Barrier(ca_data->comm);
+#endif
+
+#ifdef topo_timing
+    endTimeTopo = MPI_Wtime();
 #endif
     }
 
@@ -3733,6 +3776,18 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
         H5MM_free(count_sizes);
 
     }
+
+#ifdef topo_timing
+    endTime = MPI_Wtime();
+    double max_frac;
+    double l_frac = (endTimeTopo - startTimeTopo)/(endTime - startTime);
+    MPI_Allreduce ( &max_frac, &l_frac, 1, MPI_DOUBLE, MPI_MAX, ca_data->comm );
+    if (myrank == 0) {
+        printf("READ: Aggregator Selection Fraction = %f\n", max_frac);
+        fflush(stdout);
+    }
+    MPI_Barrier(ca_data->comm);
+#endif
 
 } /* H5FD_mpio_ccio_read_one_sided */
 
