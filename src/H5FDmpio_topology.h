@@ -787,8 +787,8 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
                 max_off_l = max_off;
 
                 /* Use allreduce to get global min and max offsets */
-                MPI_Allreduce ( &min_off, &min_off_l, 1, MPI_DOUBLE_INT, MPI_MIN, comm );
-                MPI_Allreduce ( &max_off, &max_off_l, 1, MPI_DOUBLE_INT, MPI_MAX, comm );
+                MPI_Allreduce ( &min_off_l, &min_off, 1, MPI_DOUBLE_INT, MPI_MIN, comm );
+                MPI_Allreduce ( &max_off_l, &max_off, 1, MPI_DOUBLE_INT, MPI_MAX, comm );
 
                 /* Loop through data to add counts to known file domains */
                 int64_t fd_size = (max_off - min_off) / nb_aggr;

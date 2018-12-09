@@ -3541,9 +3541,9 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
 #ifdef topo_timing
     endTime = MPI_Wtime();
     double max_frac;
-    double l_frac = (endTimeTopo - startTimeTopo)/(endTime - startTime);
-    MPI_Allreduce ( &max_frac, &l_frac, 1, MPI_DOUBLE, MPI_MAX, ca_data->comm );
-    if (myrank == 0) {
+    double l_frac = (endTimeTopo - startTimeTopo) / (endTime - startTime);
+    MPI_Allreduce ( &l_frac, &max_frac, 1, MPI_DOUBLE, MPI_MAX, ca_data->comm );
+    if ((myrank == 0)&& (ca_data->topo_cb_select != DEFAULT)) {
         printf("WRITE: Aggregator Selection Fraction = %f\n", max_frac);
         fflush(stdout);
     }
@@ -3781,8 +3781,8 @@ void H5FD_mpio_ccio_write_one_sided(CustomAgg_FH_Data ca_data, const void *buf, 
     endTime = MPI_Wtime();
     double max_frac;
     double l_frac = (endTimeTopo - startTimeTopo)/(endTime - startTime);
-    MPI_Allreduce ( &max_frac, &l_frac, 1, MPI_DOUBLE, MPI_MAX, ca_data->comm );
-    if (myrank == 0) {
+    MPI_Allreduce ( &l_frac, &max_frac, 1, MPI_DOUBLE, MPI_MAX, ca_data->comm );
+    if ((myrank == 0)&& (ca_data->topo_cb_select != DEFAULT)) {
         printf("READ: Aggregator Selection Fraction = %f\n", max_frac);
         fflush(stdout);
     }
