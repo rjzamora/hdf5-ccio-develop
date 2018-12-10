@@ -810,7 +810,7 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
                 max_off = (int64_t) max_off_g;
 
 #ifdef topo_debug
-                if ((DBGRANKS > 0) {
+                if (DBGRANKS > 0) {
                     for (rank=0;rank<TMIN(nprocs,DBGRANKS);rank++) {
                         if (rank == myrank) {
                             printf("Rank %d - (min_off_l=%ld, max_off_l=%ld) (min_off=%ld, max_off=%ld):", myrank, (int64_t) min_off_l, (int64_t) max_off_l, min_off, max_off);
