@@ -39,7 +39,7 @@
 #define MAX_STR 1024
 
 #define topo_debug
-#define DBGRANKS 16 // Only shows ranklist on rank==0 if DBGRANKS==0
+#define DBGRANKS 0 // Only shows ranklist on rank==0 if DBGRANKS==0
 
 /*
  * MPI_CHECK_H5 will display a custom error message as well as an error string
@@ -480,6 +480,9 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
         distance_to_io = distance_to_io_node ( rank );
         aggr_cost.cost += distance_to_io * latency;
 
+        /* If "this" rank was selected as the "strided" initial list, give it slight preference */
+        if ( aggr_cost.rank == agg_list[ agg_ind ]) aggr_cost.cost-=latency;
+
         /* Determine the aggr with minimum cost */
         //printf("agg_ind = %d aggr_cost.rank = %d aggr_cost.cost = %f\n",agg_ind,aggr_cost.rank,aggr_cost.cost);
         MPI_Allreduce ( &aggr_cost, &min_cost, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm );
@@ -696,7 +699,7 @@ int get_ranklist_random ( int64_t nb_aggr, int* agg_list, MPI_Comm comm )
                 good = 1;
                 r = rand() % nprocs;
                 for (i=0; i<agg_ind; i++) {
-                    if ((r == agg_list[i]) || (r < 0) || (r > (nb_aggr-1))) {
+                    if ((r == agg_list[i]) || (r < 0) || (r > (nprocs-1))) {
                         good = 0;
                         break;
                     }
