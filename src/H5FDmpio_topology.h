@@ -33,9 +33,13 @@
 #endif
 
 #define TMIN(a,b) (((a)<(b))?(a):(b))
+#define TMAX(a,b) (((a)>(b))?(a):(b))
 #define LARGE_PENALTY 1000000.0
 #define SMALL_PENALTY 1000.0 /* Note: This penalty is currently arbitrary */
 #define MAX_STR 1024
+
+#define topo_debug
+#define DBGRANKS 0 // Only shows ranklist on rank==0 if DBGRANKS==0
 
 /*
  * MPI_CHECK_H5 will display a custom error message as well as an error string
@@ -492,7 +496,7 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
             base_cost_penalty += LARGE_PENALTY;
         else {
             distance = distance_between_ranks ( rank, min_cost.rank, ppn, pps );
-            if (distance > 0)
+            if (distance < 2)
                 base_cost_penalty += SMALL_PENALTY;
         }
 
@@ -763,39 +767,71 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
     int *ranklist, int64_t buffer_size, int64_t nb_aggr, int ppn, int pps,
     int stride, MPI_Comm comm, enum AGGSelect select_type, int fd_mapping )
 {
-    int r, myrank;
+    int r;
+    int64_t *data_to_send_per_aggr;
+    double min_off_g, max_off_g, min_off_l, max_off_l;
+    int64_t min_off, max_off, off;
+    int64_t st_agg, in_0, in_1;
+
+#ifdef topo_debug
+    int rank, myrank, nprocs;
+    MPI_Comm_rank ( comm, &myrank );
+    MPI_Comm_size ( comm, &nprocs );
+#endif
+
     switch(select_type) {
 
         case DATA :
         {
             /* Tally data quantities associated with each aggregator */
-            int64_t *data_to_send_per_aggr;
             data_to_send_per_aggr = (int64_t *) calloc (nb_aggr, sizeof (int64_t));
 
-            if (fd_mapping==0) { /* GPFS-style mapping */
+            if (fd_mapping==1) { /* GPFS-style mapping */
 
                 /* get local min and max offsets */
-                int64_t min_off, max_off, min_off_l, max_off_l, off;
-                int64_t st_agg, in_0, in_1;
-                min_off = offsets[0]; max_off = offsets[0] + data_lens[0];
-                for ( r = 0; r < data_len; r++ ) {
-                  if (offsets[r] < min_off) min_off = offsets[r];
-                  off = offsets[r] + data_lens[r];
-                  if (off > max_off) max_off = off;
+
+                min_off = offsets[0];
+                max_off = offsets[0] + data_lens[0];
+                for ( r = 1; r < data_len; r++ ) {
+                    if (offsets[r] < min_off)
+                        min_off = offsets[r];
+                    off = offsets[r] + data_lens[r];
+                    if (off > max_off)
+                        max_off = off;
                 }
-                min_off_l = min_off;
-                max_off_l = max_off;
+                min_off_l = (double) min_off;
+                max_off_l = (double) max_off;
 
                 /* Use allreduce to get global min and max offsets */
-                MPI_Allreduce ( &min_off_l, &min_off, 1, MPI_DOUBLE_INT, MPI_MIN, comm );
-                MPI_Allreduce ( &max_off_l, &max_off, 1, MPI_DOUBLE_INT, MPI_MAX, comm );
+                MPI_Allreduce ( &min_off_l, &min_off_g, 1, MPI_DOUBLE, MPI_MIN, comm );
+                MPI_Allreduce ( &max_off_l, &max_off_g, 1, MPI_DOUBLE, MPI_MAX, comm );
+
+                min_off = (int64_t) min_off_g;
+                max_off = (int64_t) max_off_g;
+
+#ifdef topo_debug
+                if ((DBGRANKS > 0) {
+                    for (rank=0;rank<TMIN(nprocs,DBGRANKS);rank++) {
+                        if (rank == myrank) {
+                            printf("Rank %d - (min_off_l=%ld, max_off_l=%ld) (min_off=%ld, max_off=%ld):", myrank, (int64_t) min_off_l, (int64_t) max_off_l, min_off, max_off);
+                            for (r=0;r<data_len;r++)
+                                printf(" [%ld -> %ld]", offsets[r], offsets[r]+data_lens[r] );
+                            printf("\n");
+                            fflush(stdout);
+                        }
+                        MPI_Barrier(comm);
+                    }
+                }
+#endif
 
                 /* Loop through data to add counts to known file domains */
                 int64_t fd_size = (max_off - min_off) / nb_aggr;
                 for ( r = 0; r < data_len; r++ ) {
-                    st_agg = (offsets[r]-min_off) / fd_size;
-                    in_0   = (offsets[r]-min_off) % fd_size;
-                    in_1   = data_lens[r] - in_0;
+                    st_agg = (offsets[r] - min_off) / fd_size;
+                    //in_0   = (offsets[r]-min_off) % fd_size;
+                    in_0   = ((st_agg + 1) * fd_size) - (offsets[r] - min_off);
+                    in_0   = TMIN ( in_0, data_lens[r] );
+                    in_1   = TMAX(0, data_lens[r] - in_0);
                     data_to_send_per_aggr[ (int) st_agg ] += in_0;
                     data_to_send_per_aggr[ (int) ((st_agg+1)%nb_aggr) ] += in_1;
                 }
@@ -836,8 +872,7 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
 
     }
 
-    /*
-    MPI_Comm_rank ( comm, &myrank );
+#ifdef topo_debug
     if (myrank == 0) {
         printf("Topology-aware CB Selection (type %d): nb_aggr is %d, and ranklist is:", select_type, nb_aggr);
         for (r=0;r<nb_aggr;r++)
@@ -845,8 +880,19 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
         printf("\n");
     }
     MPI_Barrier(comm);
-    */
-
+    if ((select_type == DATA) && (DBGRANKS > 0)) {
+        for (rank=0;rank<TMIN(nprocs,DBGRANKS);rank++) {
+            if (rank == myrank) {
+                printf("Rank %d - Data distribution: ", myrank);
+                for (r=0;r<nb_aggr;r++)
+                    printf(" %d", data_to_send_per_aggr[r]);
+                printf("\n");
+                fflush(stdout);
+            }
+            MPI_Barrier(comm);
+        }
+    }
+#endif
 
     return 0;
 }
