@@ -39,7 +39,7 @@
 #define MAX_STR 1024
 
 #define topo_debug
-#define DBGRANKS 0 // Only shows ranklist on rank==0 if DBGRANKS==0
+#define DBGRANKS 16 // Only shows ranklist on rank==0 if DBGRANKS==0
 
 /*
  * MPI_CHECK_H5 will display a custom error message as well as an error string
@@ -684,8 +684,9 @@ int get_ranklist_spread ( int64_t nb_aggr, int* agg_list, int ppn, int pps, MPI_
  */
 int get_ranklist_random ( int64_t nb_aggr, int* agg_list, MPI_Comm comm )
 {
-    int i, r, good, agg_ind, rank;
+    int i, r, good, agg_ind, rank, nprocs;
     MPI_Comm_rank ( comm, &rank );
+    MPI_Comm_size ( comm, &nprocs );
 
     /* Use rank-0 to crate a random agg placement */
     if (rank == 0) {
@@ -693,7 +694,7 @@ int get_ranklist_random ( int64_t nb_aggr, int* agg_list, MPI_Comm comm )
         for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
             while (1) {
                 good = 1;
-                r = rand() % nb_aggr;
+                r = rand() % nprocs;
                 for (i=0; i<agg_ind; i++) {
                     if ((r == agg_list[i]) || (r < 0) || (r > (nb_aggr-1))) {
                         good = 0;
