@@ -1,7 +1,7 @@
 
 /*
  * Programmers: Richard Zamora <rzamora@anl.gov>
- *              August 2018, (last modified: October 16th, 2018)
+ *              August 2018, (last modified: December 11th, 2018)
  *
  *              Francois Tessier <ftessier@cscs.ch>
  *              August 2018
@@ -34,7 +34,7 @@
 #define TMIN(a,b) (((a)<(b))?(a):(b))
 #define TMAX(a,b) (((a)>(b))?(a):(b))
 #define LARGE_PENALTY 10000000.0
-#define SMALL_PENALTY 1000.0 /* Note: This penalty is currently arbitrary */
+#define SMALL_PENALTY 10000.0 /* Note: This penalty is currently arbitrary */
 #define MAX_STR 1024
 
 #define topo_debug
@@ -62,16 +62,12 @@
 /* Typedefs */
 /************/
 
-int* RankSelection;
-int  RankSelection_cnt = 0;
-
 typedef struct cost cost;
 
 struct cost {
     double cost;
     int rank;
 };
-
 
 /*
  * AGGSelect is used to select the desired aggregation selection routine
@@ -81,42 +77,6 @@ struct cost {
  * RANDOM  -> Use random rank selection for aggregator placement
  */
 enum AGGSelect{DEFAULT, DATA, SPREAD, STRIDED, RANDOM};
-
-int H5FD_ccio_reset_RankSelection() {
-  if (RankSelection_cnt > 0){
-    free(RankSelection);
-    RankSelection_cnt = 0;
-  }
-  return RankSelection_cnt;
-}
-
-int H5FD_ccio_use_RankSelection( int naggs, int* ranklist ) {
-  int i;
-  if (RankSelection_cnt == naggs){
-    for (i=0; i<naggs; i++) {
-      ranklist[i] = RankSelection[i];
-    }
-    printf("using old ranklist...\n");
-    return 1;
-  }
-  H5FD_ccio_reset_RankSelection();
-  return 0;
-}
-
-int H5FD_ccio_populate_RankSelection( int naggs, int* ranklist ) {
-  int i;
-  if (RankSelection_cnt == naggs) {
-    return RankSelection_cnt;
-  } else if (RankSelection_cnt > 0){
-    free(RankSelection);
-    RankSelection_cnt = 0;
-  }
-  RankSelection = (int *) malloc(sizeof(int) * naggs);
-  for (i=0; i<naggs; i++) {
-    RankSelection[i] = ranklist[i];
-  }
-  return RankSelection_cnt;
-}
 
 /*-------------------------------------------------------------------------
  * Function:    CountProcsPerNode
@@ -178,7 +138,7 @@ int64_t network_bandwidth () {
 #ifdef BGQ
     return 1800000;
 #endif
-    // Default Value:
+    /* Default Value */
     return 1800000;
 }
 
@@ -198,7 +158,7 @@ int64_t network_latency () {
 #ifdef BGQ
     return 30;
 #endif
-    // Default Value:
+    /* Default Value */
     return 30;
 }
 
@@ -273,7 +233,6 @@ int distance_between_ranks ( int src_rank, int dest_rank, int ppn, int pps ) {
         distance += hops;
     }
 #else
-
     /*
      * If we don't have topology information, but do know ppn & pps (per socket),
      * just assume simple rank ordering.
@@ -296,7 +255,6 @@ int distance_between_ranks ( int src_rank, int dest_rank, int ppn, int pps ) {
     }
     if (!same_soc)  distance++;
     if (!same_node) distance++;
-
 #endif
 
     return distance;
@@ -423,13 +381,10 @@ int distance_to_io_node ( int src_rank ) {
 #ifdef THETAIO
     int nodesList[MAX_IONODES];
     int n_lnets, i;
-
     n_lnets = io_nodes_per_file ( "/lus/theta-fs0/projects/datascience/rzamora/topology/1D-ARRAY-00000000.dat", nodesList );
-
     for ( i = 0; i < n_lnets; i++ ) {
         fprintf (stdout, "%d ", nodesList[i]);
     }
-
     /*
      * Note: This function needs to be improved to actually calculate the distance to IO nodes...
      * Fore now, just setting distance to 1:
@@ -476,8 +431,6 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
     data_distribution = (int64_t *) malloc (nprocs * sizeof(int64_t));
     world_ranks       = (int *) malloc (nprocs * sizeof(int));
     min_stride        = nprocs / nb_aggr;
-    //if (rank == 0) printf("ppn = %d \n",ppn);
-    //if (rank == 0) printf("min_stride = %d \n",min_stride);
 
     /* Loop through the aggregators (this is the `serial` part) */
     for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
@@ -752,7 +705,6 @@ int get_ranklist_random ( int64_t nb_aggr, int* agg_list, MPI_Comm comm )
     }
     /* Bcast random list to other ranks */
     MPI_Bcast(&agg_list[0], nb_aggr, MPI_INT, 0, comm);
-
     return 0;
 }
 
@@ -769,14 +721,11 @@ int get_ranklist_strided ( int64_t nb_aggr, int* agg_list, int stride, MPI_Comm 
 {
     int agg_ind, nprocs;
     MPI_Comm_size ( comm, &nprocs );
-
     if (stride < 1) stride = nprocs / nb_aggr;
-
     /* Use rank-0 to crate a random agg placement */
     for (agg_ind=0; agg_ind<nb_aggr; agg_ind++ ) {
         agg_list[ agg_ind ] = agg_ind * stride;
     }
-
     return 0;
 }
 
@@ -803,7 +752,6 @@ int get_ranklist_strided ( int64_t nb_aggr, int* agg_list, int stride, MPI_Comm 
  *   | agg 1 round 1 | agg 1 round 2 | agg 2 round 1 | agg 2 round 2 |
  *    ---------------------------------------------------------------
  *
- *
  * Return:      0 == Success. Populates int *ranklist
  *
  *-------------------------------------------------------------------------
@@ -823,10 +771,6 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
     MPI_Comm_rank ( comm, &myrank );
     MPI_Comm_size ( comm, &nprocs );
 #endif
-
-    if ( H5FD_ccio_use_RankSelection( (int)nb_aggr, ranklist ) ) {
-      return 0;
-    }
 
     switch(select_type) {
 
@@ -942,8 +886,6 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
         }
     }
 #endif
-
-    H5FD_ccio_populate_RankSelection( nb_aggr, ranklist );
 
     return 0;
 }
