@@ -14,7 +14,6 @@
 /*********************/
 /* Define Statements */
 /*********************/
-//#define BGQ
 
 #ifdef THETA
 #include <pmi.h>
@@ -34,7 +33,7 @@
 
 #define TMIN(a,b) (((a)<(b))?(a):(b))
 #define TMAX(a,b) (((a)>(b))?(a):(b))
-#define LARGE_PENALTY 1000000.0
+#define LARGE_PENALTY 10000000.0
 #define SMALL_PENALTY 1000.0 /* Note: This penalty is currently arbitrary */
 #define MAX_STR 1024
 
@@ -63,12 +62,16 @@
 /* Typedefs */
 /************/
 
+int* RankSelection;
+int  RankSelection_cnt = 0;
+
 typedef struct cost cost;
 
 struct cost {
     double cost;
     int rank;
 };
+
 
 /*
  * AGGSelect is used to select the desired aggregation selection routine
@@ -78,6 +81,42 @@ struct cost {
  * RANDOM  -> Use random rank selection for aggregator placement
  */
 enum AGGSelect{DEFAULT, DATA, SPREAD, STRIDED, RANDOM};
+
+int H5FD_ccio_reset_RankSelection() {
+  if (RankSelection_cnt > 0){
+    free(RankSelection);
+    RankSelection_cnt = 0;
+  }
+  return RankSelection_cnt;
+}
+
+int H5FD_ccio_use_RankSelection( int naggs, int* ranklist ) {
+  int i;
+  if (RankSelection_cnt == naggs){
+    for (i=0; i<naggs; i++) {
+      ranklist[i] = RankSelection[i];
+    }
+    printf("using old ranklist...\n");
+    return 1;
+  }
+  H5FD_ccio_reset_RankSelection();
+  return 0;
+}
+
+int H5FD_ccio_populate_RankSelection( int naggs, int* ranklist ) {
+  int i;
+  if (RankSelection_cnt == naggs) {
+    return RankSelection_cnt;
+  } else if (RankSelection_cnt > 0){
+    free(RankSelection);
+    RankSelection_cnt = 0;
+  }
+  RankSelection = (int *) malloc(sizeof(int) * naggs);
+  for (i=0; i<naggs; i++) {
+    RankSelection[i] = ranklist[i];
+  }
+  return RankSelection_cnt;
+}
 
 /*-------------------------------------------------------------------------
  * Function:    CountProcsPerNode
@@ -409,8 +448,8 @@ int distance_to_io_node ( int src_rank ) {
  * Function:    topology_aware_list_serial
  *
  * Purpose:     Given a `tally` array (of bytes needed to/from each of nb_aggr
- *              aggregators) on each rank, determine optimal list of ranks to
- *              act as the aggregators (agg_list).
+ *              aggregators) on each rank, determine optimal list of ranks
+ *              to act as the aggregators (agg_list).
  *
  * Return:      0 == Success. Populates int* agg_list
  *
@@ -499,6 +538,8 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
             base_cost_penalty += LARGE_PENALTY;
         else {
             distance = distance_between_ranks ( rank, min_cost.rank, ppn, pps );
+            if (distance < 1)
+                base_cost_penalty += SMALL_PENALTY;
             if (distance < 2)
                 base_cost_penalty += SMALL_PENALTY;
         }
@@ -783,6 +824,10 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
     MPI_Comm_size ( comm, &nprocs );
 #endif
 
+    if ( H5FD_ccio_use_RankSelection( (int)nb_aggr, ranklist ) ) {
+      return 0;
+    }
+
     switch(select_type) {
 
         case DATA :
@@ -897,6 +942,8 @@ int topology_aware_ranklist ( int64_t* data_lens, int64_t* offsets, int data_len
         }
     }
 #endif
+
+    H5FD_ccio_populate_RankSelection( nb_aggr, ranklist );
 
     return 0;
 }
