@@ -14,6 +14,7 @@
 /*********************/
 /* Define Statements */
 /*********************/
+//#define BGQ
 
 #ifdef THETA
 #include <pmi.h>
@@ -216,17 +217,18 @@ int distance_between_ranks ( int src_rank, int dest_rank, int ppn, int pps ) {
             distance++;
     }
 #elif defined( BGQ )
-    int dim = 6, d, hops;
-    int src_coord[dim], dest_coord[dim];
-    //int dim, d, hops;
+    int dim=6, d, hops;
+    int src_coord[6], dest_coord[6];
     MPIX_Hardware_t hw;
 
     rank_to_coordinates ( src_rank, src_coord );
     rank_to_coordinates ( dest_rank, dest_coord );
 
     MPIX_Hardware( &hw );
+    //dim = hw.torus_dimension; // Should return "6"
 
-    for ( d = 0; d < dim; d++ ) {
+    /* Note: dont count last dimension.. it refers to cores on same node */
+    for ( d = 0; d < dim-1; d++ ) {
         hops = abs ( dest_coord[d] - src_coord[d] );
         if ( hw.isTorus[d] == 1 )
             hops = TMIN ( hops, (int)hw.Size[d] - hops );
@@ -465,7 +467,7 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
         for (r = 0; r < aggr_nprocs; r++ ) {
             if ( (rank != world_ranks[r]) && (data_distribution[r] > 0)) {
                 distance = distance_between_ranks ( rank, world_ranks[r], ppn, pps );
-                //printf("agg_ind = %d r = %d distance = %d \n", agg_ind, r , distance);
+                //printf("Rank %d - agg_ind = %d r = %d distance = %d \n", rank, agg_ind, r , distance);
                 aggr_cost.cost += ( distance * latency + data_distribution[r] / bandwidth );
             }
         }
@@ -492,8 +494,6 @@ int topology_aware_list_serial ( int64_t* tally, int64_t nb_aggr, int* agg_list,
         else {
             distance = distance_between_ranks ( rank, min_cost.rank, ppn, pps );
             if (distance < 1)
-                base_cost_penalty += SMALL_PENALTY;
-            if (distance < 2)
                 base_cost_penalty += SMALL_PENALTY;
         }
 
