@@ -21,7 +21,6 @@
 
 #include "H5FDdrvr_module.h" /* This source code file is part of the H5FD driver module */
 
-
 #include "H5private.h"		/* Generic Functions			*/
 #include "H5CXprivate.h"        /* API Contexts                         */
 #include "H5Dprivate.h"		/* Dataset functions			*/

@@ -14,20 +14,49 @@
 /*********************/
 /* Define Statements */
 /*********************/
+
+/*
+ * HOWTO Information:
+ *
+ *    To add a new system, add a new #ifdef block below. At a minimum, you must
+ *    define the NETWORK_BANDWIDTH and NETWORK_LATENCY. You should also add
+ *    '#include' statements for any libraries you need to implement
+ *    machine-specific code in `distance_between_ranks()` and in
+ *    `distance_to_io_node()`.  You will probably also need to use/modify the
+ *    `rank_to_coordinates()` function to actually calculate rank-rank hop
+ *    distances.
+ *
+ *    For systems with PMI support (e.g. #include <pmi.h> is available), follow
+ *    the THETA example for calculating rank-rank distances.
+ *
+ */
+
+/* Machine-specific Defs/Includes for Theta Cray XC40 (@ALCF) */
 #ifdef THETA
 #include <pmi.h>
-#include <lustre/lustreapi.h>
-#include <lustre/lustre_user.h>
-#define LNETS_PER_OST   7
-#define MAX_IONODES     392 /* 56 OSTs * 7 LNET */
-#endif
-#ifdef BGQ
+#include <lustre/lustreapi.h>     /* Not used in this version of the API */
+#include <lustre/lustre_user.h>   /* Not used in this version of the API */
+#define LNETS_PER_OST     7
+#define MAX_IONODES       392     /* 56 OSTs * 7 LNET */
+#define NETWORK_BANDWIDTH 1800000
+#define NETWORK_LATENCY   30
+
+/* Machine-specific Defs/Includes for IBM BG/Q Mira/Vesta (@ALCF) */
+#elif defined (BGQ)
 #include <spi/include/kernel/location.h>
 #include <spi/include/kernel/process.h>
 #include <spi/include/kernel/memory.h>
 #include <firmware/include/personality.h>
 #include <hwi/include/bqc/nd_500_dcr.h>
 #include <mpix.h>
+#define NETWORK_BANDWIDTH 1800000
+#define NETWORK_LATENCY   30
+
+/* Default Machine Defs */
+#else
+#define NETWORK_BANDWIDTH 1800000
+#define NETWORK_LATENCY   30
+
 #endif
 
 #define TMIN(a,b) (((a)<(b))?(a):(b))
@@ -35,9 +64,8 @@
 #define LARGE_PENALTY 10000000.0
 #define SMALL_PENALTY 10000.0 /* Note: This penalty is currently arbitrary */
 #define MAX_STR 1024
-
-//#define topo_debug
 #define DBGRANKS 1 // Only shows ranklist on rank==0 if DBGRANKS==0
+//#define topo_debug
 
 /*
  * MPI_CHECK_H5 will display a custom error message as well as an error string
@@ -57,9 +85,11 @@
     }                                                                    \
 } while(0)
 
-/************/
-/* Typedefs */
-/************/
+
+/*********************/
+/* Special Type Defs */
+/*********************/
+
 
 typedef struct cost cost;
 
@@ -76,6 +106,12 @@ struct cost {
  * RANDOM  -> Use random rank selection for aggregator placement
  */
 enum AGGSelect{DEFAULT, DATA, SPREAD, STRIDED, RANDOM};
+
+
+/************************/
+/* Function Definitions */
+/************************/
+
 
 /*-------------------------------------------------------------------------
  * Function:    CountProcsPerNode
@@ -131,14 +167,7 @@ static int CountProcsPerNode(int numTasks, int rank, MPI_Comm comm)
  *-------------------------------------------------------------------------
  */
 int64_t network_bandwidth () {
-#ifdef THETA
-    return 1800000;
-#endif
-#ifdef BGQ
-    return 1800000;
-#endif
-    /* Default Value */
-    return 1800000;
+    return NETWORK_BANDWIDTH;
 }
 
 /*-------------------------------------------------------------------------
@@ -151,14 +180,7 @@ int64_t network_bandwidth () {
  *-------------------------------------------------------------------------
  */
 int64_t network_latency () {
-#ifdef THETA
-    return 30;
-#endif
-#ifdef BGQ
-    return 30;
-#endif
-    /* Default Value */
-    return 30;
+    return NETWORK_LATENCY;
 }
 
 /*-------------------------------------------------------------------------
@@ -184,8 +206,7 @@ void rank_to_coordinates ( int rank, int* coord ) {
     coord[2] = xyz.mesh_z;
     coord[3] = nid;
     coord[4] = sched_getcpu();
-#endif
-#ifdef BGQ
+#elif defined (BGQ)
     MPIX_Rank2torus( rank, coord );
 #endif
 }
@@ -214,7 +235,7 @@ int distance_between_ranks ( int src_rank, int dest_rank, int ppn, int pps ) {
         if ( src_coord[d] != dest_coord[d] )
             distance++;
     }
-#elif defined( BGQ )
+#elif defined (BGQ)
     int dim=6, d, hops;
     int src_coord[6], dest_coord[6];
     MPIX_Hardware_t hw;
@@ -379,20 +400,32 @@ int distance_between_ranks ( int src_rank, int dest_rank, int ppn, int pps ) {
  */
 int distance_to_io_node ( int src_rank ) {
 #ifdef THETAIO
+
+    /*
+     * On Theta/LUSTRE, each OST will be served by 7 different IO nodes. This
+     * means the writing/reading of a specific stripe (on a specific OST) will
+     * require the aggregator to interact with up to 7 different IO nodes
+     * durring the course of a collective I/O operation.
+     *
+     * The following code cannot be used to actually determine the exact/avg
+     * IO-node distace, but it is included in case we get ideas later. :)
+     */
     int nodesList[MAX_IONODES];
     int n_lnets, i;
     n_lnets = io_nodes_per_file ( "/lus/theta-fs0/projects/datascience/rzamora/topology/1D-ARRAY-00000000.dat", nodesList );
     for ( i = 0; i < n_lnets; i++ ) {
         fprintf (stdout, "%d ", nodesList[i]);
     }
+
     /*
      * Note: This function needs to be improved to actually calculate the distance to IO nodes...
      * Fore now, just setting distance to 1:
      */
     return 1;
-#endif
-#ifdef BGQ
+
+#elif defined (BGQ)
     return MPIX_IO_distance ();
+
 #endif
 
     /* Default Value */
