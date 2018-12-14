@@ -35,7 +35,7 @@
 #include "H5FDmpio_topology.h"  /* Topology API                         */
 #include <pthread.h>
 
-#define topo_timing
+//#define topo_timing
 //#define onesidedtrace
 #ifdef H5_HAVE_PARALLEL
 #ifdef BGQ

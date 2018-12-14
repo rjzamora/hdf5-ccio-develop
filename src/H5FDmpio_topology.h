@@ -14,8 +14,6 @@
 /*********************/
 /* Define Statements */
 /*********************/
-//#define BGQ
-
 #ifdef THETA
 #include <pmi.h>
 #include <lustre/lustreapi.h>
@@ -38,8 +36,8 @@
 #define SMALL_PENALTY 10000.0 /* Note: This penalty is currently arbitrary */
 #define MAX_STR 1024
 
-#define topo_debug
-#define DBGRANKS 0 // Only shows ranklist on rank==0 if DBGRANKS==0
+//#define topo_debug
+#define DBGRANKS 1 // Only shows ranklist on rank==0 if DBGRANKS==0
 
 /*
  * MPI_CHECK_H5 will display a custom error message as well as an error string
