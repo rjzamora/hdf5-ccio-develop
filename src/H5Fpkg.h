@@ -358,6 +358,7 @@ struct H5F_file_t {
 
     /* Object flush info */
     H5F_object_flush_t 	object_flush;	    /* Information for object flush callback */
+    hbool_t crt_dset_min_ohdr_flag; /* flag to minimize created dataset object header */
 };
 
 /*
@@ -408,7 +409,8 @@ typedef enum H5VL_file_optional_t {
     H5VL_FILE_GET_MDC_IMAGE_INFO,
     H5VL_FILE_GET_EOA,
     H5VL_FILE_INCR_FILESIZE,
-    H5VL_FILE_SET_LIBVER_BOUNDS
+    H5VL_FILE_SET_LIBVER_BOUNDS,
+    H5VL_FILE_SET_MIN_DSET_OHDR_FLAG
 } H5VL_file_optional_t;
 
 

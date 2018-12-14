@@ -826,7 +826,7 @@ test_compact_io(hid_t fapl)
      **************************************/
 
     /* Create a copy of file access property list */
-    if((new_fapl = new_fapl = h5_fileaccess()) < 0) TEST_ERROR
+    if((new_fapl = h5_fileaccess()) < 0) TEST_ERROR
 
     /* Loop through all the combinations of low/high library format bounds,
        skipping invalid combinations.
@@ -13046,6 +13046,109 @@ test_versionbounds(void)
     return -1;
 } /* test_versionbounds() */
 
+
+/*-----------------------------------------------------------------------------
+ * Function:   test_object_header_minimization_dcpl
+ *
+ * Purpose:    Test the "datset object header minimization" property as part of
+ *             the DCPL.
+ *
+ * Return:     Success/pass:   0
+ *             Failure/error: -1
+ *
+ * Programmer: Jacob Smith
+ *             2018 August 15
+ *
+ * Changes:    None.
+ *-----------------------------------------------------------------------------
+ */
+static herr_t
+test_object_header_minimization_dcpl(void)
+{
+    hid_t    dcpl_id  = -1;
+    hid_t    file_id  = -1;
+    hbool_t  minimize = FALSE;
+
+    TESTING("dcpl flags to minimize dataset object header");
+
+    /*********/
+    /* SETUP */
+    /*********/
+
+    file_id = H5Fcreate("some_arbitrary_filename", H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (0 > file_id)
+        FAIL_PUTS_ERROR("unable to create test file\n");
+
+    dcpl_id = H5Pcreate(H5P_DATASET_CREATE);
+    if (0 > dcpl_id)
+        FAIL_PUTS_ERROR("unable to create DCPL\n");
+
+    /*********/
+    /* TESTS */
+    /*********/
+
+    /* default value (not set explicitly)
+     */
+    if (FAIL == H5Pget_dset_no_attrs_hint(dcpl_id, &minimize))
+        FAIL_PUTS_ERROR("unable to get minimize value\n");
+    if (FALSE != minimize)
+        FAIL_PUTS_ERROR("Expected FALSE default but was not!\n");
+
+    /* FALSE-set value
+     */
+    if (FAIL == H5Pset_dset_no_attrs_hint(dcpl_id, FALSE))
+        FAIL_PUTS_ERROR("unable to set minimize value to FALSE\n");
+    if (FAIL == H5Pget_dset_no_attrs_hint(dcpl_id, &minimize))
+        FAIL_PUTS_ERROR("unable to get minimize value\n");
+    if (FALSE != minimize)
+        FAIL_PUTS_ERROR("Expected FALSE default but was not!\n");
+
+    /* TRUE-set value
+     */
+    if (FAIL == H5Pset_dset_no_attrs_hint(dcpl_id, TRUE))
+        FAIL_PUTS_ERROR("unable to set minimize value to TRUE\n");
+    if (FAIL == H5Pget_dset_no_attrs_hint(dcpl_id, &minimize))
+        FAIL_PUTS_ERROR("unable to get minimize value\n");
+    if (TRUE != minimize)
+        FAIL_PUTS_ERROR("Expected TRUE default but was not!\n");
+
+    /* error cases
+     */
+    H5E_BEGIN_TRY {
+        if (SUCCEED == H5Pget_dset_no_attrs_hint(-1, &minimize))
+            FAIL_PUTS_ERROR("Invalid DCPL ID should fail\n");
+
+        if (SUCCEED == H5Pset_dset_no_attrs_hint(-1, FALSE))
+            FAIL_PUTS_ERROR("Invalid DCPL ID should fail\n");
+
+        if (SUCCEED == H5Pset_dset_no_attrs_hint(-1, TRUE))
+            FAIL_PUTS_ERROR("Invalid DCPL ID should fail\n");
+
+        if (SUCCEED == H5Pget_dset_no_attrs_hint(dcpl_id, NULL))
+            FAIL_PUTS_ERROR("NULL out pointer should fail\n");
+    } H5E_END_TRY;
+
+    /************/
+    /* TEARDOWN */
+    /************/
+
+    if (FAIL == H5Fclose(file_id))
+        FAIL_PUTS_ERROR("can't close FILE");
+
+    if (FAIL == H5Pclose(dcpl_id))
+        FAIL_PUTS_ERROR("unable to close DCPL\n");
+
+    PASSED();
+    return 0;
+
+error:
+    H5E_BEGIN_TRY {
+        H5Pclose(dcpl_id);
+        H5Fclose(file_id);
+    } H5E_END_TRY;
+    return -1;
+} /* test_object_header_minimization_dcpl */
+
 
 /*-------------------------------------------------------------------------
  * Function:    main
@@ -13068,6 +13171,7 @@ main(void)
     hid_t    fcpl = -1, fcpl2 = -1;
     unsigned new_format;
     unsigned paged;
+    unsigned minimized_ohdr;
     int      mdc_nelmts;
     size_t   rdcc_nelmts;
     size_t   rdcc_nbytes;
@@ -13118,10 +13222,12 @@ main(void)
     /* Test with paged aggregation enabled or not */
     for(paged = FALSE; paged <= TRUE; paged++) {
 
-        /* Temporary: skip testing for multi/split drivers:
-             fail file create when persisting free-space or using paged aggregation strategy */
-        if(!contig_addr_vfd && paged)
-            continue;
+      /* Temporary: skip testing for multi/split drivers:
+           fail file create when persisting free-space or using paged aggregation strategy */
+      if(!contig_addr_vfd && paged)
+          continue;
+
+      for (minimized_ohdr = FALSE; minimized_ohdr <= TRUE; minimized_ohdr++) {
 
         /* Test with old & new format groups */
         for(new_format = FALSE; new_format <= TRUE; new_format++) {
@@ -13152,6 +13258,12 @@ main(void)
             /* Create the file for this test */
             if((file = H5Fcreate(filename, H5F_ACC_TRUNC, my_fcpl, my_fapl)) < 0)
                 goto error;
+
+            if (TRUE == minimized_ohdr) {
+                if (0 > H5Fset_dset_no_attrs_hint(file, TRUE))
+                    goto error;
+                puts("(minimized dataset object headers with file setting)");
+            }
 
             /* Cause the library to emit initial messages */
             if((grp = H5Gcreate2(file, "emit diagnostics", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT)) < 0)
@@ -13230,6 +13342,7 @@ main(void)
             if(H5Fclose(file) < 0)
                 goto error;
         } /* end for new_format */
+      } /* for minimized dset object headers */
     } /* end for paged */
 
     /* Close property lists */
@@ -13245,6 +13358,8 @@ main(void)
 
     /* Tests version bounds using its own file */
     nerrors += (test_versionbounds() < 0             ? 1 : 0);
+
+    nerrors += (test_object_header_minimization_dcpl() < 0 ? 1 : 0);
 
     /* Run misc tests */
     nerrors += dls_01_main();

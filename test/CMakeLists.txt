@@ -268,6 +268,7 @@ set (H5_TESTS
     cache_logging
     cork
     swmr
+    ohdr_mindset
     vol
 )
 
